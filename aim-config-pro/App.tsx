@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
 import { InputForm } from './components/InputForm';
 import { ResultsDashboard } from './components/ResultsDashboard';
+import { PrinciplesFooter } from './components/PrinciplesFooter';
 import { NotebookParams, NotebookOutput } from './types';
 import { saveConfigurationAndRun } from './services/gemini';
-import { Database, AlertTriangle } from 'lucide-react';
+import { Database, AlertTriangle, Target } from 'lucide-react';
 
 const App: React.FC = () => {
   const [data, setData] = useState<NotebookOutput | null>(null);
+  const [lastConfig, setLastConfig] = useState<NotebookParams | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [hasRun, setHasRun] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -15,6 +17,7 @@ const App: React.FC = () => {
     setIsLoading(true);
     setError(null);
     setHasRun(false); // Reset previous run state while loading
+    setLastConfig(params);
     
     console.group("🏁 App: Starting Save Process");
     try {
@@ -35,26 +38,25 @@ const App: React.FC = () => {
     setHasRun(false);
     setData(null);
     setError(null);
+    setLastConfig(null);
   };
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-100 text-slate-900">
       
       {/* Header */}
-      <header className="bg-slate-900 text-white shadow-lg sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <header className="bg-white-700 text-black shadow-lg sticky top-0 z-50">
+        <div className="bg-slate-100 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-             <div className="p-2 bg-blue-600 rounded-lg">
-                <Database size={20} className="text-white" />
+             <div className="p-2 bg-[#00ab04] rounded-lg">
+                <Target size={25} className="text-white" />
              </div>
              <div>
-                <h1 className="text-xl font-bold tracking-tight">Notebook Runner Pro</h1>
-                <p className="text-xs text-slate-400">Cloud Data Processing Interface</p>
+                <h1 className="text-black text-xl font-bold tracking-tight">AIM Workspace</h1>
              </div>
           </div>
           <div className="hidden md:flex items-center gap-4 text-sm text-slate-400">
              <span className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-green-500"></div> System Active</span>
-             <span>v2.5.4</span>
           </div>
         </div>
       </header>
@@ -84,11 +86,12 @@ const App: React.FC = () => {
         {!hasRun ? (
           <InputForm onSubmit={handleSaveAndRun} isLoading={isLoading} />
         ) : (
-          <ResultsDashboard data={data} onReset={handleReset} />
+          <ResultsDashboard data={data} config={lastConfig} onReset={handleReset} />
         )}
 
       </main>
 
+      <PrinciplesFooter />
     </div>
   );
 };

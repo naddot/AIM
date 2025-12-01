@@ -45,12 +45,12 @@ export const InputForm: React.FC<InputFormProps> = ({ onSubmit, isLoading }) => 
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col h-full">
-      <div className="p-6 bg-slate-50 border-b border-slate-200">
-        <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
+      <div className="p-6 bg-[#00ab04] border-b border-slate-200">
+        <h2 className="text-lg font-semibold text-white flex items-center gap-2">
           Configuration
         </h2>
-        <p className="text-sm text-slate-500 mt-1">
-          Adjust parameters to customize the notebook execution run.
+        <p className="text-sm text-white mt-1">
+          Adjust parameters to customize AIM execution run.
         </p>
       </div>
 
@@ -167,6 +167,7 @@ export const InputForm: React.FC<InputFormProps> = ({ onSubmit, isLoading }) => 
               <option value={Season.Summer}>Summer</option>
               <option value=""></option>
             </select>
+            <p className="text-xs text-slate-400">Leave blank to process full dataset.</p>
           </div>
 
           <div className="space-y-2">
@@ -209,7 +210,7 @@ export const InputForm: React.FC<InputFormProps> = ({ onSubmit, isLoading }) => 
         ) : (
           <button
             onClick={handleSubmit}
-            className={`flex-1 px-4 py-2 text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-all flex items-center justify-center gap-2 shadow-md hover:shadow-lg`}
+            className={`flex-1 px-4 py-2 text-white bg-[#00ab04] rounded-lg hover:bg-[#008003] transition-all flex items-center justify-center gap-2 shadow-md hover:shadow-lg`}
           >
             <Save size={18} />
             Save Configuration
