@@ -38,3 +38,7 @@ ENV/
 # Local/Temp
 *.log
 tmp/
+
+#ami-config-pro
+aim-config-pro/
+aim-config-pro/*

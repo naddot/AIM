@@ -229,9 +229,9 @@ final AS (
     v.snapshot_date AS Date,
     v.journey_category,
     v.vehicle AS Vehicle,
+    v.Size,
     v.SlotPosition,
     v.MerchandisingPosition,
-    v.Size,
     v.Manufacturer,
     v.ModelName,
     v.Variant,
@@ -239,7 +239,6 @@ final AS (
 
     -- UNIQUE USER FLAGS
     CASE WHEN vbf.rn_user_day = 1 THEN 1 ELSE 0 END AS UsersUniqueDay,
-    CASE WHEN vbf.rn_user_day_journey = 1 THEN 1 ELSE 0 END AS UsersUniqueDayJourney,
 
     vm.Segment,
     vm.Pod,
@@ -247,7 +246,8 @@ final AS (
     COALESCE(pv.Orders, 0)           AS Orders,
     COALESCE(pv.Purchasers, 0)       AS Purchasers,
     COALESCE(pv.PurchasedUnits, 0)   AS PurchasedUnits,
-    COALESCE(pv.PurchasedRevenue, 0) AS PurchasedRevenue
+    COALESCE(pv.PurchasedRevenue, 0) AS PurchasedRevenue,
+    CASE WHEN vbf.rn_user_day_journey = 1 THEN 1 ELSE 0 END AS UsersUniqueDayJourney
   FROM visibility_best_flagged vbf
   JOIN visibility_best v
     ON v.user_id   = vbf.user_id
@@ -267,17 +267,16 @@ SELECT
   Date,
   journey_category,
   Vehicle,
+  Size,
   SlotPosition,
   MerchandisingPosition,
-  Size,
   Manufacturer,
   ModelName,
   Variant,
   SKU,
 
   -- UNIQUE USER FLAGS
-  CASE WHEN Date BETWEEN bad_start_date AND bad_end_date THEN NULL ELSE UsersUniqueDay        END AS UsersUniqueDay,
-  CASE WHEN Date BETWEEN bad_start_date AND bad_end_date THEN NULL ELSE UsersUniqueDayJourney END AS UsersUniqueDayJourney,
+  CASE WHEN Date BETWEEN bad_start_date AND bad_end_date THEN NULL ELSE UsersUniqueDay        END AS TotalUsers,
 
   Segment,
   Pod,
@@ -287,7 +286,8 @@ SELECT
   CASE WHEN Date BETWEEN bad_start_date AND bad_end_date THEN NULL ELSE Orders           END AS Orders,
   CASE WHEN Date BETWEEN bad_start_date AND bad_end_date THEN NULL ELSE Purchasers       END AS Purchasers,
   CASE WHEN Date BETWEEN bad_start_date AND bad_end_date THEN NULL ELSE PurchasedUnits   END AS PurchasedUnits,
-  CASE WHEN Date BETWEEN bad_start_date AND bad_end_date THEN NULL ELSE PurchasedRevenue END AS PurchasedRevenue
+  CASE WHEN Date BETWEEN bad_start_date AND bad_end_date THEN NULL ELSE PurchasedRevenue END AS PurchasedRevenue,
+  CASE WHEN Date BETWEEN bad_start_date AND bad_end_date THEN NULL ELSE UsersUniqueDayJourney END AS UsersUniqueDayJourney
 FROM final;
 
 COMMIT TRANSACTION;
