@@ -293,49 +293,46 @@ def run_stage_3():
 def log(msg):
     logging.info(msg)
 
+def _ensure_not_redirected_to_login(resp, context: str):
+    """Catch auth failures where protected endpoints bounce to /login."""
+    final_url = str(resp.url).lower()
+    if "/login" in final_url:
+        raise RuntimeError(f"{context} redirected to login (auth likely failed).")
+    for h in resp.history:
+        loc = h.headers.get("location", "").lower()
+        if h.status_code in (301, 302, 303, 307, 308) and "login" in loc:
+            raise RuntimeError(f"{context} redirected to login (auth likely failed).")
+
 async def login(client: httpx.AsyncClient):
     # If your service needs a password/login:
-    # r = await client.post(f"{AIM_BASE_URL}/login", json={"password": AIM_SERVICE_PASSWORD})
-    # r.raise_for_status()
-    pass
+    logging.info(f"🔑 Logging in to {AIM_BASE_URL}...")
+    r = await client.post(
+        f"{AIM_BASE_URL}/login",
+        data={"password": AIM_SERVICE_PASSWORD},
+        timeout=30,
+    )
+    r.raise_for_status()
+    if not client.cookies:
+        raise RuntimeError("Login did not set any cookies; check AIM_SERVICE_PASSWORD or the expected login payload.")
+    logging.info("✅ Login successful and session cookie set.")
 
 async def fetch_segments(client: httpx.AsyncClient):
-    r = await client.get(f"{AIM_BASE_URL}/api/segments", timeout=30)
+    r = await client.get(f"{AIM_BASE_URL}/app", timeout=30)
     r.raise_for_status()
-    # Assuming the API returns a JSON list of segments
-    # If it returns HTML (as in previous code), we need BeautifulSoup
-    # The previous code used BeautifulSoup to parse <select> options.
-    # I will keep the BeautifulSoup logic if that's what the endpoint returns.
-    # But wait, the previous code had: r = await client.get(f"{STAGE4_BASE_URL}/app", timeout=30)
-    # And parsed HTML.
-    # The user's new config has AIM_BASE_URL.
-    # I'll assume the endpoint /app still exists and returns HTML.
-    
-    # Actually, let's check the previous code for fetch_segments.
-    # It was fetching from /app.
-    
-    try:
-        r = await client.get(f"{AIM_BASE_URL}/app", timeout=30)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-        sel = soup.select_one("select[name='segment']")
-        if not sel:
-             # Fallback or error?
-             # Maybe the user changed the endpoint?
-             # I'll stick to the previous logic but use AIM_BASE_URL.
-             pass
-        else:
-            return [
-                o.get_text(strip=True)
-                for o in sel.find_all("option")
-                if o.get_text(strip=True) and not o.get_text(strip=True).startswith("--")
-            ]
-    except Exception as e:
-        logging.warning(f"Failed to fetch segments from /app: {e}")
-        
-    # If that fails or if we want to try the API directly if available?
-    # I will stick to the code I had before but updated variable.
-    return []
+    _ensure_not_redirected_to_login(r, "Fetching /app for segments")
+    soup = BeautifulSoup(r.text, "html.parser")
+    sel = soup.select_one("select[name='segment']")
+    if not sel:
+        raise RuntimeError("Couldn't find segment dropdown on /app")
+    segments = [
+        o.get_text(strip=True)
+        for o in sel.find_all("option")
+        if o.get_text(strip=True) and not o.get_text(strip=True).startswith("--")
+    ]
+    if not segments:
+        raise RuntimeError("No segments parsed from /app")
+    log(f"✅ Fetched {len(segments)} segment(s) via /app dropdown.")
+    return segments
 
 async def fetch_page(client, segment, offset, retries=2):
     params = {
@@ -391,6 +388,8 @@ async def run_all_segments():
     async with httpx.AsyncClient(follow_redirects=True) as client:
         await login(client)
         segments = await fetch_segments(client)
+        if not segments:
+            raise RuntimeError("No segments returned; authentication or parsing likely failed.")
         
         if AIM_LIMIT_SEGMENTS:
             wanted = set(AIM_LIMIT_SEGMENTS)
