@@ -48,15 +48,15 @@ const App: React.FC = () => {
       <header className="bg-white-700 text-black shadow-lg sticky top-0 z-50">
         <div className="bg-slate-100 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-             <div className="p-2 bg-[#00ab04] rounded-lg">
-                <Target size={25} className="text-white" />
-             </div>
-             <div>
-                <h1 className="text-black text-xl font-bold tracking-tight">AIM Workspace</h1>
-             </div>
+            <div className="p-2 bg-[#00ab04] rounded-lg">
+              <Target size={25} className="text-white" />
+            </div>
+            <div>
+              <h1 className="text-black text-xl font-bold tracking-tight">AIM Workspace</h1>
+            </div>
           </div>
           <div className="hidden md:flex items-center gap-4 text-sm text-slate-400">
-             <span className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-green-500"></div> System Active</span>
+            <span className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-green-500"></div> System Active</span>
           </div>
         </div>
       </header>
@@ -66,8 +66,8 @@ const App: React.FC = () => {
         
         {error && (
           <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-lg shadow-sm animate-in fade-in slide-in-from-top-2">
-             <div className="flex items-start gap-3">
-                 <div className="flex-shrink-0 mt-0.5">
+            <div className="flex items-start gap-3">
+                <div className="flex-shrink-0 mt-0.5">
                     <AlertTriangle className="h-5 w-5 text-red-500" />
                   </div>
                   <div className="w-full">
@@ -79,7 +79,7 @@ const App: React.FC = () => {
                       Check the browser console (F12) for "Raw Response Body" to see full details.
                     </p>
                   </div>
-             </div>
+            </div>
           </div>
         )}
 
