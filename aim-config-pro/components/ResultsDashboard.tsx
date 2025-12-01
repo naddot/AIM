@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import React from 'react';
 import { NotebookOutput, NotebookParams } from '../types';
 import { CheckCircle2, ArrowLeft, Terminal, CloudLightning } from 'lucide-react';
