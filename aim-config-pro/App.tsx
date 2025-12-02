@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 import { InputForm } from './components/InputForm';
 import { ResultsDashboard } from './components/ResultsDashboard';
-import { PrinciplesFooter } from './components/PrinciplesFooter';
 import { HeroSection } from './components/HeroSection';
+import { Principles } from './components/Principles';
+import { AimFooter } from './components/AimFooter';
+import { FinsightFooter } from './components/FinsightFooter';
 import { Header } from './components/Header';
 import { NotebookParams, NotebookOutput } from './types';
 import { saveConfigurationAndRun } from './services/gemini';
@@ -79,7 +81,10 @@ const App: React.FC = () => {
 
       </main>
 
-      <PrinciplesFooter />
+      <Principles />
+      <AimFooter />
+      {/* Swap to the alternate footer by uncommenting below */}
+      {/* <FinsightFooter | AimFooter /> */}
     </div>
   );
 };
