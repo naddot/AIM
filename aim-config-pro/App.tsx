@@ -2,9 +2,11 @@ import React, { useState } from 'react';
 import { InputForm } from './components/InputForm';
 import { ResultsDashboard } from './components/ResultsDashboard';
 import { PrinciplesFooter } from './components/PrinciplesFooter';
+import { HeroSection } from './components/HeroSection';
+import { Header } from './components/Header';
 import { NotebookParams, NotebookOutput } from './types';
 import { saveConfigurationAndRun } from './services/gemini';
-import { Database, AlertTriangle, Target } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 
 const App: React.FC = () => {
   const [data, setData] = useState<NotebookOutput | null>(null);
@@ -44,25 +46,11 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen flex flex-col bg-slate-100 text-slate-900">
       
-      {/* Header */}
-      <header className="bg-white-700 text-black shadow-lg sticky top-0 z-50">
-        <div className="bg-slate-100 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-[#00ab04] rounded-lg">
-              <Target size={25} className="text-white" />
-            </div>
-            <div>
-              <h1 className="text-black text-xl font-bold tracking-tight">AIM Workspace</h1>
-            </div>
-          </div>
-          <div className="hidden md:flex items-center gap-4 text-sm text-slate-400">
-            <span className="flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-green-500"></div> System Active</span>
-          </div>
-        </div>
-      </header>
+      <Header />
 
       {/* Main Content */}
       <main className="flex-1 w-full max-w-3xl mx-auto px-4 py-8 flex flex-col gap-6 justify-center">
+        <HeroSection />
         
         {error && (
           <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-lg shadow-sm animate-in fade-in slide-in-from-top-2">

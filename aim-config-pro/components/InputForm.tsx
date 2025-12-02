@@ -20,9 +20,21 @@ const initialParams: NotebookParams = {
 
 export const InputForm: React.FC<InputFormProps> = ({ onSubmit, isLoading }) => {
   const [formData, setFormData] = useState<NotebookParams>(initialParams);
+  const [errors, setErrors] = useState<{ totalPerSegment?: string }>({});
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
+
+    if (name === "TOTAL_PER_SEGMENT") {
+      const numericValue = Number(value);
+      if (numericValue > 5000) {
+        setErrors((prev) => ({ ...prev, totalPerSegment: "The limit for this input is 5000" }));
+        return; // Do not allow value beyond 5000
+      } else {
+        setErrors((prev) => ({ ...prev, totalPerSegment: undefined }));
+      }
+    }
+
     setFormData(prev => ({
       ...prev,
       [name]: e.target.type === 'number' ? Number(value) : value,
@@ -36,6 +48,7 @@ export const InputForm: React.FC<InputFormProps> = ({ onSubmit, isLoading }) => 
 
   const handleReset = () => {
     setFormData(initialParams);
+    setErrors({});
   };
 
   // Allow forcing a reload if stuck
@@ -70,6 +83,9 @@ export const InputForm: React.FC<InputFormProps> = ({ onSubmit, isLoading }) => 
               className="w-full px-4 py-2 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
               required
             />
+            {errors.totalPerSegment && (
+              <p className="text-xs text-red-600">{errors.totalPerSegment}</p>
+            )}
           </div>
 
           <div className="space-y-2">
