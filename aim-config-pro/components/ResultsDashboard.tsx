@@ -84,15 +84,36 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data, config
 
   const configEntries = config
     ? (Object.keys(CONFIG_LABELS) as (keyof NotebookParams)[]).map((key) => {
-        let val: string | number = (config as any)[key];
-        if (key === "LIMIT_TO_SEGMENTS") {
-          val = val ? val : "All segments";
-        } else if (key === "SEASON") {
-          val = val || "None";
-        }
-        return { label: CONFIG_LABELS[key], value: val };
-      })
+      let val: string | number = (config as any)[key];
+      if (key === "LIMIT_TO_SEGMENTS") {
+        val = val ? val : "All segments";
+      } else if (key === "SEASON") {
+        val = val || "None";
+      }
+      return { label: CONFIG_LABELS[key], value: val };
+    })
     : [];
+
+  const [isJobRunning, setIsJobRunning] = React.useState(false);
+  const [jobResult, setJobResult] = React.useState<{ success: boolean; message: string } | null>(null);
+
+  const handleRunJob = async () => {
+    setIsJobRunning(true);
+    setJobResult(null);
+    try {
+      const res = await fetch('/api/trigger-job', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        setJobResult({ success: true, message: "Job triggered successfully! It may take a few minutes to complete." });
+      } else {
+        setJobResult({ success: false, message: data.error || "Failed to trigger job." });
+      }
+    } catch (err) {
+      setJobResult({ success: false, message: "Network error. Failed to trigger job." });
+    } finally {
+      setIsJobRunning(false);
+    }
+  };
 
   return (
     <div className="bg-white rounded-xl shadow-xl border border-slate-200 p-8 md:p-12 flex flex-col items-center text-center animate-in fade-in zoom-in duration-500 fill-mode-both">
@@ -158,14 +179,45 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data, config
         </div>
       )}
 
-      {/* Action Button */}
-      <button
-        onClick={onReset}
-        className="group px-6 py-3 bg-white text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 hover:border-slate-400 transition-all font-medium flex items-center gap-2 focus:ring-4 focus:ring-slate-100"
-      >
-        <ArrowLeft size={18} className="group-hover:-translate-x-1 transition-transform" />
-        Configure New Run
-      </button>
+      {/* Job Trigger Result */}
+      {jobResult && (
+        <div className={`w-full max-w-lg p-4 mb-6 rounded-lg text-left border ${jobResult.success ? 'bg-green-50 border-green-200 text-green-800' : 'bg-red-50 border-red-200 text-red-800'}`}>
+          <div className="flex items-center gap-2 font-semibold">
+            {jobResult.success ? <CheckCircle2 size={18} /> : <Terminal size={18} />}
+            {jobResult.success ? "Success" : "Error"}
+          </div>
+          <p className="text-sm mt-1">{jobResult.message}</p>
+        </div>
+      )}
+
+      {/* Action Buttons */}
+      <div className="flex flex-col sm:flex-row gap-3 w-full max-w-lg">
+        <button
+          onClick={handleRunJob}
+          disabled={isJobRunning}
+          className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all font-medium flex items-center justify-center gap-2 shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {isJobRunning ? (
+            <>
+              <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              Starting Job...
+            </>
+          ) : (
+            <>
+              <Terminal size={18} />
+              Run AIM Job Now
+            </>
+          )}
+        </button>
+
+        <button
+          onClick={onReset}
+          className="flex-1 px-6 py-3 bg-white text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 hover:border-slate-400 transition-all font-medium flex items-center justify-center gap-2 focus:ring-4 focus:ring-slate-100"
+        >
+          <ArrowLeft size={18} />
+          Configure New Run
+        </button>
+      </div>
     </div>
   );
 };

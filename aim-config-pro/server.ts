@@ -5,6 +5,8 @@ import cors from "cors";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import { Storage } from "@google-cloud/storage";
+import { JobsClient } from "@google-cloud/run";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -43,6 +45,93 @@ const SECRET_NAME = "projects/829092209663/secrets/AIM-config-growth-update/vers
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// Fetch Current Config from GCS
+app.get("/api/current-config", async (req, res) => {
+  console.log(`\n[${new Date().toISOString()}] 📥 Fetching Current Configuration from GCS`);
+
+  try {
+    const gcsUri = process.env.CONFIG_GCS_URI || "gs://aim-home/aim-config-files/aim-config.json";
+    console.log(`Target GCS URI: ${gcsUri}`);
+
+    if (!gcsUri.startsWith("gs://")) {
+      throw new Error("Invalid GCS URI format. Must start with gs://");
+    }
+
+    const uriParts = gcsUri.slice(5).split("/");
+    const bucketName = uriParts[0];
+    const fileName = uriParts.slice(1).join("/");
+
+    console.log(`Bucket: ${bucketName}, File: ${fileName}`);
+
+    // 1. Get Credentials from Secret Manager (reusing existing logic pattern if needed, or assuming default env auth)
+    // For simplicity in this step, we'll rely on ADC or the same credentials if we were to load them.
+    // However, the existing code loads credentials dynamically for the *backend service call*.
+    // For GCS, we might need to do the same if not running in an env with implicit access.
+    // Given Cloud Run usually has the service account attached, we'll try default auth first.
+    // If that fails, we might need to reuse the secret manager logic, but usually Storage() works with ADC.
+
+    const storage = new Storage();
+    const bucket = storage.bucket(bucketName);
+    const file = bucket.file(fileName);
+
+    const [exists] = await file.exists();
+    if (!exists) {
+      console.warn("⚠️ Config file not found in GCS.");
+      res.status(404).json({ error: "Config file not found" });
+      return;
+    }
+
+    const [content] = await file.download();
+    const jsonContent = JSON.parse(content.toString());
+
+    console.log("✅ Config loaded successfully.");
+    res.json(jsonContent);
+
+  } catch (err: any) {
+    console.error("❌ GCS Fetch Error:", err.message);
+    res.status(500).json({ error: "Failed to fetch current config", details: err.message });
+  }
+});
+
+// Trigger Cloud Run Job
+app.post("/api/trigger-job", async (req, res) => {
+  console.log(`\n[${new Date().toISOString()}] 🚀 Triggering Cloud Run Job`);
+
+  try {
+    const projectId = process.env.PROJECT_ID;
+    const region = process.env.REGION || "europe-west2";
+    const jobName = process.env.JOB_NAME || "aim-growth-job";
+
+    if (!projectId) {
+      throw new Error("PROJECT_ID environment variable is not set.");
+    }
+
+    const client = new JobsClient();
+    const name = `projects/${projectId}/locations/${region}/jobs/${jobName}`;
+
+    console.log(`Target Job: ${name}`);
+
+    const request = {
+      name,
+    };
+
+    // Run the job
+    const [operation] = await client.runJob(request);
+    console.log(`✅ Job triggered successfully. Operation: ${operation.name}`);
+
+    res.json({
+      success: true,
+      message: "Job triggered successfully",
+      operation: operation.name,
+      job: name
+    });
+
+  } catch (err: any) {
+    console.error("❌ Job Trigger Error:", err.message);
+    res.status(500).json({ error: "Failed to trigger job", details: err.message });
+  }
 });
 
 // Primary Config Save Endpoint

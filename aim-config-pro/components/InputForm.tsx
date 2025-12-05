@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { NotebookParams, Season } from '../types';
-import { RotateCcw, Save, XCircle } from 'lucide-react';
+import { RotateCcw, Save, XCircle, Eye, EyeOff, FileJson, Terminal, CheckCircle2 } from 'lucide-react';
 
 interface InputFormProps {
   onSubmit: (data: NotebookParams) => void;
@@ -21,6 +21,50 @@ const initialParams: NotebookParams = {
 export const InputForm: React.FC<InputFormProps> = ({ onSubmit, isLoading }) => {
   const [formData, setFormData] = useState<NotebookParams>(initialParams);
   const [errors, setErrors] = useState<{ totalPerSegment?: string }>({});
+  const [currentConfig, setCurrentConfig] = useState<any | null>(null);
+  const [showConfig, setShowConfig] = useState(false);
+  const [configLoading, setConfigLoading] = useState(false);
+
+  // Job Trigger State
+  const [isJobRunning, setIsJobRunning] = useState(false);
+  const [jobResult, setJobResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  useEffect(() => {
+    const fetchConfig = async () => {
+      setConfigLoading(true);
+      try {
+        const res = await fetch('/api/current-config');
+        if (res.ok) {
+          const data = await res.json();
+          setCurrentConfig(data);
+        }
+      } catch (err) {
+        console.error("Failed to fetch current config", err);
+      } finally {
+        setConfigLoading(false);
+      }
+    };
+
+    fetchConfig();
+  }, []);
+
+  const handleRunJob = async () => {
+    setIsJobRunning(true);
+    setJobResult(null);
+    try {
+      const res = await fetch('/api/trigger-job', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        setJobResult({ success: true, message: "Job triggered successfully! It may take a few minutes to complete." });
+      } else {
+        setJobResult({ success: false, message: data.error || "Failed to trigger job." });
+      }
+    } catch (err) {
+      setJobResult({ success: false, message: "Network error. Failed to trigger job." });
+    } finally {
+      setIsJobRunning(false);
+    }
+  };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -68,6 +112,73 @@ export const InputForm: React.FC<InputFormProps> = ({ onSubmit, isLoading }) => 
       </div>
 
       <form onSubmit={handleSubmit} className="p-6 flex-1 overflow-y-auto space-y-6">
+
+        {/* Current Config Toggle */}
+        <div className="bg-slate-50 rounded-lg border border-slate-200 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setShowConfig(!showConfig)}
+            className="w-full px-4 py-3 flex items-center justify-between text-sm font-medium text-slate-700 hover:bg-slate-100 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <FileJson size={16} className="text-slate-500" />
+              <span>Current GCS Configuration</span>
+            </div>
+            {showConfig ? <EyeOff size={16} /> : <Eye size={16} />}
+          </button>
+
+          {showConfig && (
+            <div className="p-4 border-t border-slate-200 bg-slate-100 overflow-x-auto">
+              {configLoading ? (
+                <div className="text-xs text-slate-500 italic">Loading config...</div>
+              ) : currentConfig ? (
+                <pre className="text-xs font-mono text-slate-600 whitespace-pre-wrap">
+                  {JSON.stringify(currentConfig, null, 2)}
+                </pre>
+              ) : (
+                <div className="text-xs text-slate-500 italic">No configuration found or failed to load.</div>
+              )}
+
+              {/* Manual Job Trigger inside Config Box */}
+              <div className="mt-4 pt-4 border-t border-slate-200">
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-slate-500 uppercase">Manual Trigger</span>
+                  </div>
+
+                  {jobResult && (
+                    <div className={`p-3 rounded text-xs border ${jobResult.success ? 'bg-green-50 border-green-200 text-green-800' : 'bg-red-50 border-red-200 text-red-800'}`}>
+                      <div className="flex items-center gap-2 font-semibold mb-1">
+                        {jobResult.success ? <CheckCircle2 size={14} /> : <Terminal size={14} />}
+                        {jobResult.success ? "Success" : "Error"}
+                      </div>
+                      {jobResult.message}
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleRunJob}
+                    disabled={isJobRunning}
+                    className="w-full px-4 py-2 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-all font-medium flex items-center justify-center gap-2 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isJobRunning ? (
+                      <>
+                        <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        Starting Job...
+                      </>
+                    ) : (
+                      <>
+                        <Terminal size={14} />
+                        Run AIM Job Now
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* Metric Inputs */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -236,3 +347,4 @@ export const InputForm: React.FC<InputFormProps> = ({ onSubmit, isLoading }) => 
     </div>
   );
 };
+
