@@ -122,7 +122,7 @@ export const InputForm: React.FC<InputFormProps> = ({ onSubmit, isLoading }) => 
           >
             <div className="flex items-center gap-2">
               <FileJson size={16} className="text-slate-500" />
-              <span>Current GCS Configuration</span>
+              <span>Current AIM Configuration</span>
             </div>
             {showConfig ? <EyeOff size={16} /> : <Eye size={16} />}
           </button>
@@ -170,7 +170,7 @@ export const InputForm: React.FC<InputFormProps> = ({ onSubmit, isLoading }) => 
                     ) : (
                       <>
                         <Terminal size={14} />
-                        Run AIM Job Now
+                        Run AIM Now
                       </>
                     )}
                   </button>
