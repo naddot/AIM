@@ -81,6 +81,7 @@ def load_and_apply_gcs_config():
     global AIM_TOTAL_PER_SEGMENT, AIM_GOLDILOCKS_ZONE_PCT
     global AIM_PRICE_FLUCT_UPPER, AIM_PRICE_FLUCT_LOWER
     global AIM_BRAND_ENHANCER, AIM_MODEL_ENHANCER, AIM_SEASON, AIM_LIMIT_SEGMENTS
+    global KNOWN_MAKES
 
     if IGNORE_GCS_CONFIG:
         logging.info("ℹ️ IGNORE_GCS_CONFIG is True. Skipping GCS config load.")
@@ -168,6 +169,9 @@ def load_and_apply_gcs_config():
 # Try to load GCS config immediately
 load_and_apply_gcs_config()
 
+# Global list of known car makes to help with parsing
+KNOWN_MAKES = set()
+
 def get_exact_file(gcs_client, base_name):
     """Checks if a file exists in GCS and returns its path."""
     bucket = gcs_client.bucket(TYRESCORE_BUCKET)
@@ -247,6 +251,13 @@ def run_stage_1():
             ]
 
             logging.info(f"🧪 Columns: {df.columns.tolist()}")
+
+            # If this is CarMakeModelSales, capture known makes
+            if "CarMake" in df.columns:
+                unique_makes = df["CarMake"].dropna().unique()
+                for mk in unique_makes:
+                    KNOWN_MAKES.add(str(mk).strip().upper())
+                logging.info(f"✅ Captured {len(unique_makes)} unique Makes for parsing logic.")
 
             # Load into BigQuery
             table_ref = f"{PROJECT_ID}.{job['bq_table']}"
@@ -445,6 +456,50 @@ def repair_vehicle_size(row):
     s = normalize_size(s)
     return pd.Series({"Vehicle": v, "Size": s})
 
+def parse_vehicle_split(vehicle_str: str):
+    """
+    Splits 'VAUXHALL GRANDLAND X' -> ('VAUXHALL', 'GRANDLAND X')
+    using the KNOWN_MAKES set populated in Stage 1.
+    """
+    v = str(vehicle_str or "").strip()
+    upper_v = v.upper()
+    
+    # longest makes first to avoid partial matches
+    sorted_makes = sorted(list(KNOWN_MAKES), key=len, reverse=True)
+    
+    best_make = "Unknown"
+    best_model = v
+
+    for make in sorted_makes:
+        if upper_v.startswith(make):
+            # found a match
+            # e.g. v="Mercedes-Benz A45", make="MERCEDES-BENZ"
+            best_make = make # stick to uppercase or title case? Let's use the text from the set.
+            # model is the rest
+            remainder = v[len(make):].strip()
+            best_model = remainder
+            break
+            
+    # normalization: Title Case for output?
+    # User example showed "Vauxhall", "Grandland X" (Title Case)
+    def to_title(s):
+        return " ".join([word.capitalize() for word in s.split()])
+
+    return to_title(best_make), to_title(best_model)
+
+def parse_size_split(size_str: str):
+    """
+    Splits '225/55 R18' or '225/55R18' -> ('225', '55', '18')
+    """
+    # Regex for standard sizes: 225/55 R18
+    # We might have letters like ZR, R, etc.
+    # Group 1: Width, Group 2: Profile, Group 3: Rim
+    match = re.search(r'(\d{2,3})[/\\](\d{2,3}(?:\.\d+)?)\s*[A-Z]*\s*(\d{2})', str(size_str).upper())
+    if match:
+        return match.group(1), match.group(2), match.group(3)
+    return None, None, None
+
+
 def process_stage4_results(results):
     # Shape the CSV
     rows = []
@@ -465,28 +520,29 @@ def process_stage4_results(results):
     df = pd.DataFrame(rows)
     if df.empty:
         logging.warning("⚠️ No results fetched in Stage 4.")
-        return None
+        return None, None
 
-    SKU_COLS = [f"SKU{i}" for i in range(1, 17)]
+    # SUPPORT UP TO 24 SKUS NOW
+    SKU_COLS_24 = [f"SKU{i}" for i in range(1, 25)]
     def explode_skus(s):
         parts = str(s or "").split()
-        parts = parts[:16] + [""] * max(0, 16 - len(parts))
-        return pd.Series(parts, index=SKU_COLS)
+        # pad to 24
+        parts = parts[:24] + [""] * max(0, 24 - len(parts))
+        return pd.Series(parts, index=SKU_COLS_24)
 
     sku_df = df["SKUs"].apply(explode_skus)
+    
+    # We first keep everything
     out = pd.concat([df[["Vehicle", "Size", "HB1", "HB2", "HB3", "HB4"]], sku_df], axis=1)
 
     # Vehicle/Size repair
     out[["Vehicle", "Size"]] = out.apply(repair_vehicle_size, axis=1)
 
-    # Keep only the desired columns
-    out = out[["Vehicle","Size","HB1","HB2","HB3","HB4", *SKU_COLS]]
-
     # Replace duplicate SKUs
     def _replace_duplicate_skus_in_row(row):
         seen = set()
         replaced = 0
-        for col in SKU_COLS:
+        for col in SKU_COLS_24:
             val = row[col]
             if pd.isna(val):
                 continue
@@ -507,18 +563,69 @@ def process_stage4_results(results):
     logging.info(f"🔁 Replaced {dup_cells_replaced} duplicate SKU cells with '-'.")
 
     # Drop rows containing 'FormatError'
-    bad_mask = out.astype(str).apply(lambda col: col.str.contains(r'\bFormatError\b', na=False)).any(axis=1)
+    bad_mask = out.astype(str).apply(lambda col: col.str.contains(r'FormatError', na=False)).any(axis=1)
     dropped_bad = int(bad_mask.sum())
     out = out[~bad_mask].copy()
     logging.info(f"🚮 Skipping {dropped_bad} rows containing 'FormatError'.")
 
-    # De-dup
+    # De-dup on Vehicle/Size
     DEDUP_KEY_COLUMNS = ["Vehicle", "Size"]
     before = len(out)
     out = out.drop_duplicates(subset=DEDUP_KEY_COLUMNS, keep="first")
     logging.info(f"🧹 Removed {before - len(out)} duplicate rows on {DEDUP_KEY_COLUMNS}.")
+
+    # --- PREPARE DATASET 1: AIMData (Legacy) ---
+    # Needs Vehicle, Size, HB1..4, SKU1..16
+    aim_cols = ["Vehicle","Size","HB1","HB2","HB3","HB4"] + [f"SKU{i}" for i in range(1, 17)]
+    aim_df = out[aim_cols].copy()
+
+    # --- PREPARE DATASET 2: CAM_SKU (New) ---
+    # Needs Make, Model, Width, Profile, Rim, SKU1..24, last_modified
     
-    return out
+    cam_rows = []
+    timestamp = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f UTC")
+    
+    for idx, row in out.iterrows():
+        make, model = parse_vehicle_split(row["Vehicle"])
+        w, p, r = parse_size_split(row["Size"])
+        
+        # We include the original Vehicle and Size for robust SQL matching
+        new_row = {
+            "Vehicle": row["Vehicle"],
+            "Size": row["Size"],
+            "Make": make,
+            "Model": model,
+            "Width": w,
+            "Profile": p,
+            "Rim": r,
+            "last_modified": timestamp
+        }
+        for i in range(1, 25):
+            # Validation: 
+            # 1. Convert to string and strip
+            # 2. Remove potential pandas/float artifact ".0"
+            # 3. Enforce exactly 8 characters
+            val = row.get(f"SKU{i}")
+            s_val = str(val) if val is not None else ""
+            if s_val == "-" or s_val.lower() == "nan":
+                s_val = ""
+            
+            if s_val.endswith(".0"):
+                s_val = s_val[:-2]
+            
+            s_val = s_val.strip()
+
+            if len(s_val) == 8:
+                 new_row[f"SKU{i}"] = s_val
+            else:
+                 # Invalid length or empty -> NULL
+                 new_row[f"SKU{i}"] = None
+            
+        cam_rows.append(new_row)
+        
+    cam_df = pd.DataFrame(cam_rows)
+    
+    return aim_df, cam_df
 
 def run_stage_4():
     """Executes Stage 4: Batch Runner and AIM Override SQL."""
@@ -532,28 +639,28 @@ def run_stage_4():
         return
 
     # 2. Process Results
-    out_df = process_stage4_results(results)
-    if out_df is None:
+    aim_df, cam_df = process_stage4_results(results)
+    
+    if aim_df is None:
         logging.warning("⚠️ Skipping upload/load for Stage 4 due to empty results.")
-    else:
-        # 3. Save locally and upload
-        run_date = dt.datetime.utcnow().strftime("%Y%m%d")
-        file_basename = f"aim_daily_runner_output_{run_date}.csv"
-        local_csv = os.path.join(tempfile.gettempdir(), file_basename)
-        out_df.to_csv(local_csv, index=False)
-        logging.info(f"✅ Wrote {len(out_df)} rows to {local_csv}")
+        return
 
-        storage_client = storage.Client(project=PROJECT_ID)
-        bucket = storage_client.bucket(AIM_BUCKET_NAME)
-        blob_path = f"{AIM_GCS_PREFIX}/{file_basename}"
+    # --- UPLOAD 1: AIMData (Standard) ---
+    run_date = dt.datetime.utcnow().strftime("%Y%m%d")
+    aim_basename = f"aim_daily_runner_output_{run_date}.csv"
+    local_aim_csv = os.path.join(tempfile.gettempdir(), aim_basename)
+    aim_df.to_csv(local_aim_csv, index=False)
+    logging.info(f"✅ Wrote {len(aim_df)} rows to {local_aim_csv} (AIMData)")
+
+    storage_client = storage.Client(project=PROJECT_ID)
+    bucket = storage_client.bucket(AIM_BUCKET_NAME)
+    aim_blob_path = f"{AIM_GCS_PREFIX}/{aim_basename}"
+    
+    if not DRY_RUN:
+        bucket.blob(aim_blob_path).upload_from_filename(local_aim_csv)
+        logging.info(f"✅ Uploaded to gs://{AIM_BUCKET_NAME}/{aim_blob_path}")
         
-        if not DRY_RUN:
-            bucket.blob(blob_path).upload_from_filename(local_csv)
-            logging.info(f"✅ Uploaded to gs://{AIM_BUCKET_NAME}/{blob_path}")
-        else:
-            logging.info(f"🚧 DRY RUN: Would upload to gs://{AIM_BUCKET_NAME}/{blob_path}")
-
-        # 4. Load into BigQuery
+        # Load into BigQuery
         bq_client = bigquery.Client(project=PROJECT_ID)
         table_ref = f"{PROJECT_ID}.{AIM_DATASET_ID}.{AIM_TABLE_ID}"
         job_config = bigquery.LoadJobConfig(
@@ -572,14 +679,97 @@ def run_stage_4():
                 *[bigquery.SchemaField(f"SKU{i}","STRING") for i in range(1,17)],
             ],
         )
-        uri = f"gs://{AIM_BUCKET_NAME}/{blob_path}"
+        uri = f"gs://{AIM_BUCKET_NAME}/{aim_blob_path}"
+        load_job = bq_client.load_table_from_uri(uri, table_ref, job_config=job_config)
+        load_job.result()
+        logging.info(f"✅ Loaded into {table_ref}.")
+    else:
+        logging.info(f"🚧 DRY RUN: Would upload/load AIMData to {aim_blob_path} -> {AIM_DATASET_ID}.{AIM_TABLE_ID}")
+
+    # --- UPLOAD 2: CAM_SKU (New Upsert) ---
+    cam_basename = f"cam_sku_daily_output_{run_date}.csv"
+    local_cam_csv = os.path.join(tempfile.gettempdir(), cam_basename)
+    cam_df.to_csv(local_cam_csv, index=False)
+    logging.info(f"✅ Wrote {len(cam_df)} rows to {local_cam_csv} (CAM_SKU)")
+
+    cam_blob_path = f"{AIM_GCS_PREFIX}/{cam_basename}"
+    cam_table_id = "bqsqltesting.CAM_files.CAM_SKU"
+    
+    if not DRY_RUN:
+        bucket.blob(cam_blob_path).upload_from_filename(local_cam_csv)
+        logging.info(f"✅ Uploaded to gs://{AIM_BUCKET_NAME}/{cam_blob_path}")
         
-        if not DRY_RUN:
-            load_job = bq_client.load_table_from_uri(uri, table_ref, job_config=job_config)
-            load_job.result()
-            logging.info(f"✅ Loaded into {table_ref} with {AIM_BQ_WRITE_DISPOSITION}.")
-        else:
-            logging.info(f"🚧 DRY RUN: Would load into {table_ref} from {uri}")
+        # We need a staging table for the MERGE
+        staging_table_id = f"{PROJECT_ID}.CAM_files.CAM_SKU_staging_{run_date}"
+        
+        bq_client = bigquery.Client(project=PROJECT_ID)
+        
+        # 1. Load to staging
+        job_config_cam = bigquery.LoadJobConfig(
+            source_format=bigquery.SourceFormat.CSV,
+            skip_leading_rows=1,
+            autodetect=True, # Allow autodetect for staging, or define strict schema
+            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
+        )
+        uri_cam = f"gs://{AIM_BUCKET_NAME}/{cam_blob_path}"
+        load_job = bq_client.load_table_from_uri(uri_cam, staging_table_id, job_config=job_config_cam)
+        load_job.result()
+        logging.info(f"✅ Loaded staging table {staging_table_id}")
+
+        # 1.5 Safety Check: Impact Analysis
+        # Count Matches vs New Rows
+        check_query = f"""
+        SELECT 
+            COUNT(*) as total_staging,
+            COUNTIF(T.Make IS NOT NULL) as matching_rows
+        FROM `{staging_table_id}` S
+        LEFT JOIN (
+            SELECT Make, Model, Width, Profile, Rim 
+            FROM `{cam_table_id}`
+        ) T
+        ON 
+           -- Vehicle Match
+           UPPER(TRIM(CONCAT(IFNULL(T.Make,''), ' ', IFNULL(T.Model,'')))) = UPPER(TRIM(S.Vehicle))
+           AND
+           -- Size Match
+           UPPER(TRIM(CONCAT(IFNULL(T.Width,''), '/', IFNULL(T.Profile,''), ' R', IFNULL(T.Rim,'')))) = UPPER(TRIM(S.Size))
+        """
+        try:
+            check_job = bq_client.query(check_query)
+            row = list(check_job.result())[0]
+            total = row['total_staging']
+            matched = row['matching_rows']
+            new_rows = total - matched
+            logging.info(f"🔍 Impact Analysis: {total} staging rows. {matched} will UPDATE existing. {new_rows} will INSERT new.")
+        except Exception as e:
+            logging.warning(f"⚠️ Could not run impact analysis (table might be empty or new): {e}")
+
+        # 2. Perform MERGE
+        # Updated: Read SQL from external file for maintainability
+        sql_file_path = "aim_cam_sku_update.sql"
+        try:
+            with open(sql_file_path, "r") as f:
+                merge_query_template = f.read()
+            
+            # Inject dynamic table names
+            merge_query = merge_query_template.format(
+                cam_table_id=cam_table_id,
+                staging_table_id=staging_table_id
+            )
+            
+            merge_job = bq_client.query(merge_query)
+        except Exception as e:
+            logging.error(f"❌ Failed to prepare/execute MERGE query: {e}")
+            return
+        merge_job.result()
+        logging.info(f"✅ Upserted (MERGE) data into {cam_table_id}")
+        
+        # Cleanup staging?
+        bq_client.delete_table(staging_table_id, not_found_ok=True)
+        logging.info("🧹 Deleted staging table.")
+
+    else:
+        logging.info(f"🚧 DRY RUN: Would upload/load CAM_SKU to {cam_table_id} via MERGE.")
 
 def run_stage_5():
     """Executes Stage 5: Dashboard Updater (SQL)."""
