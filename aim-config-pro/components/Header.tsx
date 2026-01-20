@@ -13,12 +13,6 @@ export const Header: React.FC = () => {
             <h1 className="text-black text-xl font-bold tracking-tight">AIM Workspace</h1>
           </div>
         </div>
-        <div className="hidden md:flex items-center gap-4 text-sm text-slate-400">
-          <span className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-green-500"></div>
-            System Active
-          </span>
-        </div>
       </div>
     </header>
   );

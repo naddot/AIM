@@ -55,7 +55,7 @@ export const InputForm: React.FC<InputFormProps> = ({ onSubmit, isLoading }) => 
       const res = await fetch('/api/trigger-job', { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
-        setJobResult({ success: true, message: "Job triggered successfully! It may take a few minutes to complete." });
+        setJobResult({ success: true, message: "Job triggered successfully!" });
       } else {
         setJobResult({ success: false, message: data.error || "Failed to trigger job." });
       }
