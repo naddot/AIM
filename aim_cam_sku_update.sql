@@ -24,7 +24,7 @@ WHEN NOT MATCHED THEN
             SKU1, SKU2, SKU3, SKU4, SKU5, SKU6, SKU7, SKU8, SKU9, SKU10, SKU11, SKU12,
             SKU13, SKU14, SKU15, SKU16, SKU17, SKU18, SKU19, SKU20, SKU21, SKU22, SKU23, SKU24,
             last_modified)
-    VALUES (Make, Model, Width, Profile, Rim,
-            SKU1, SKU2, SKU3, SKU4, SKU5, SKU6, SKU7, SKU8, SKU9, SKU10, SKU11, SKU12,
-            SKU13, SKU14, SKU15, SKU16, SKU17, SKU18, SKU19, SKU20, SKU21, SKU22, SKU23, SKU24,
-            last_modified)
+    VALUES (S.Make, S.Model, S.Width, S.Profile, S.Rim,
+            S.SKU1, S.SKU2, S.SKU3, S.SKU4, S.SKU5, S.SKU6, S.SKU7, S.SKU8, S.SKU9, S.SKU10, S.SKU11, S.SKU12,
+            S.SKU13, S.SKU14, S.SKU15, S.SKU16, S.SKU17, S.SKU18, S.SKU19, S.SKU20, S.SKU21, S.SKU22, S.SKU23, S.SKU24,
+            S.last_modified)

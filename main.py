@@ -646,130 +646,149 @@ def run_stage_4():
         return
 
     # --- UPLOAD 1: AIMData (Standard) ---
-    run_date = dt.datetime.utcnow().strftime("%Y%m%d")
-    aim_basename = f"aim_daily_runner_output_{run_date}.csv"
-    local_aim_csv = os.path.join(tempfile.gettempdir(), aim_basename)
-    aim_df.to_csv(local_aim_csv, index=False)
-    logging.info(f"✅ Wrote {len(aim_df)} rows to {local_aim_csv} (AIMData)")
+    try:
+        run_date = dt.datetime.utcnow().strftime("%Y%m%d")
+        aim_basename = f"aim_daily_runner_output_{run_date}.csv"
+        local_aim_csv = os.path.join(tempfile.gettempdir(), aim_basename)
+        aim_df.to_csv(local_aim_csv, index=False)
+        logging.info(f"✅ Wrote {len(aim_df)} rows to {local_aim_csv} (AIMData)")
 
-    storage_client = storage.Client(project=PROJECT_ID)
-    bucket = storage_client.bucket(AIM_BUCKET_NAME)
-    aim_blob_path = f"{AIM_GCS_PREFIX}/{aim_basename}"
-    
-    if not DRY_RUN:
-        bucket.blob(aim_blob_path).upload_from_filename(local_aim_csv)
-        logging.info(f"✅ Uploaded to gs://{AIM_BUCKET_NAME}/{aim_blob_path}")
+        storage_client = storage.Client(project=PROJECT_ID)
+        bucket = storage_client.bucket(AIM_BUCKET_NAME)
+        aim_blob_path = f"{AIM_GCS_PREFIX}/{aim_basename}"
         
-        # Load into BigQuery
-        bq_client = bigquery.Client(project=PROJECT_ID)
-        table_ref = f"{PROJECT_ID}.{AIM_DATASET_ID}.{AIM_TABLE_ID}"
-        job_config = bigquery.LoadJobConfig(
-            source_format=bigquery.SourceFormat.CSV,
-            skip_leading_rows=1,
-            field_delimiter=",",
-            write_disposition=getattr(bigquery.WriteDisposition, AIM_BQ_WRITE_DISPOSITION, bigquery.WriteDisposition.WRITE_TRUNCATE),
-            autodetect=False,
-            schema=[
-                bigquery.SchemaField("Vehicle","STRING"),
-                bigquery.SchemaField("Size","STRING"),
-                bigquery.SchemaField("HB1","STRING"),
-                bigquery.SchemaField("HB2","STRING"),
-                bigquery.SchemaField("HB3","STRING"),
-                bigquery.SchemaField("HB4","STRING"),
-                *[bigquery.SchemaField(f"SKU{i}","STRING") for i in range(1,17)],
-            ],
-        )
-        uri = f"gs://{AIM_BUCKET_NAME}/{aim_blob_path}"
-        load_job = bq_client.load_table_from_uri(uri, table_ref, job_config=job_config)
-        load_job.result()
-        logging.info(f"✅ Loaded into {table_ref}.")
-    else:
-        logging.info(f"🚧 DRY RUN: Would upload/load AIMData to {aim_blob_path} -> {AIM_DATASET_ID}.{AIM_TABLE_ID}")
+        if not DRY_RUN:
+            bucket.blob(aim_blob_path).upload_from_filename(local_aim_csv)
+            logging.info(f"✅ Uploaded to gs://{AIM_BUCKET_NAME}/{aim_blob_path}")
+            
+            # Load into BigQuery
+            bq_client = bigquery.Client(project=PROJECT_ID)
+            table_ref = f"{PROJECT_ID}.{AIM_DATASET_ID}.{AIM_TABLE_ID}"
+            job_config = bigquery.LoadJobConfig(
+                source_format=bigquery.SourceFormat.CSV,
+                skip_leading_rows=1,
+                field_delimiter=",",
+                write_disposition=getattr(bigquery.WriteDisposition, AIM_BQ_WRITE_DISPOSITION, bigquery.WriteDisposition.WRITE_TRUNCATE),
+                autodetect=False,
+                schema=[
+                    bigquery.SchemaField("Vehicle","STRING"),
+                    bigquery.SchemaField("Size","STRING"),
+                    bigquery.SchemaField("HB1","STRING"),
+                    bigquery.SchemaField("HB2","STRING"),
+                    bigquery.SchemaField("HB3","STRING"),
+                    bigquery.SchemaField("HB4","STRING"),
+                    *[bigquery.SchemaField(f"SKU{i}","STRING") for i in range(1,17)],
+                ],
+            )
+            uri = f"gs://{AIM_BUCKET_NAME}/{aim_blob_path}"
+            load_job = bq_client.load_table_from_uri(uri, table_ref, job_config=job_config)
+            load_job.result()
+            logging.info(f"✅ Loaded into {table_ref}.")
+        else:
+            logging.info(f"🚧 DRY RUN: Would upload/load AIMData to {aim_blob_path} -> {AIM_DATASET_ID}.{AIM_TABLE_ID}")
+    except Exception as e:
+        logging.error(f"❌ Stage 4 (AIMData) failed partway: {e}")
 
     # --- UPLOAD 2: CAM_SKU (New Upsert) ---
-    cam_basename = f"cam_sku_daily_output_{run_date}.csv"
-    local_cam_csv = os.path.join(tempfile.gettempdir(), cam_basename)
-    cam_df.to_csv(local_cam_csv, index=False)
-    logging.info(f"✅ Wrote {len(cam_df)} rows to {local_cam_csv} (CAM_SKU)")
+    try:
+        run_date = dt.datetime.utcnow().strftime("%Y%m%d")
+        cam_basename = f"cam_sku_daily_output_{run_date}.csv"
+        local_cam_csv = os.path.join(tempfile.gettempdir(), cam_basename)
+        cam_df.to_csv(local_cam_csv, index=False)
+        logging.info(f"✅ Wrote {len(cam_df)} rows to {local_cam_csv} (CAM_SKU)")
 
-    cam_blob_path = f"{AIM_GCS_PREFIX}/{cam_basename}"
-    cam_table_id = "bqsqltesting.CAM_files.CAM_SKU"
-    
-    if not DRY_RUN:
-        bucket.blob(cam_blob_path).upload_from_filename(local_cam_csv)
-        logging.info(f"✅ Uploaded to gs://{AIM_BUCKET_NAME}/{cam_blob_path}")
+        cam_blob_path = f"{AIM_GCS_PREFIX}/{cam_basename}"
+        cam_table_id = "bqsqltesting.CAM_files.CAM_SKU"
         
-        # We need a staging table for the MERGE
-        staging_table_id = f"{PROJECT_ID}.CAM_files.CAM_SKU_staging_{run_date}"
-        
-        bq_client = bigquery.Client(project=PROJECT_ID)
-        
-        # 1. Load to staging
-        job_config_cam = bigquery.LoadJobConfig(
-            source_format=bigquery.SourceFormat.CSV,
-            skip_leading_rows=1,
-            autodetect=True, # Allow autodetect for staging, or define strict schema
-            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE
-        )
-        uri_cam = f"gs://{AIM_BUCKET_NAME}/{cam_blob_path}"
-        load_job = bq_client.load_table_from_uri(uri_cam, staging_table_id, job_config=job_config_cam)
-        load_job.result()
-        logging.info(f"✅ Loaded staging table {staging_table_id}")
-
-        # 1.5 Safety Check: Impact Analysis
-        # Count Matches vs New Rows
-        check_query = f"""
-        SELECT 
-            COUNT(*) as total_staging,
-            COUNTIF(T.Make IS NOT NULL) as matching_rows
-        FROM `{staging_table_id}` S
-        LEFT JOIN (
-            SELECT Make, Model, Width, Profile, Rim 
-            FROM `{cam_table_id}`
-        ) T
-        ON 
-           -- Vehicle Match
-           UPPER(TRIM(CONCAT(IFNULL(T.Make,''), ' ', IFNULL(T.Model,'')))) = UPPER(TRIM(S.Vehicle))
-           AND
-           -- Size Match
-           UPPER(TRIM(CONCAT(IFNULL(T.Width,''), '/', IFNULL(T.Profile,''), ' R', IFNULL(T.Rim,'')))) = UPPER(TRIM(S.Size))
-        """
-        try:
-            check_job = bq_client.query(check_query)
-            row = list(check_job.result())[0]
-            total = row['total_staging']
-            matched = row['matching_rows']
-            new_rows = total - matched
-            logging.info(f"🔍 Impact Analysis: {total} staging rows. {matched} will UPDATE existing. {new_rows} will INSERT new.")
-        except Exception as e:
-            logging.warning(f"⚠️ Could not run impact analysis (table might be empty or new): {e}")
-
-        # 2. Perform MERGE
-        # Updated: Read SQL from external file for maintainability
-        sql_file_path = "aim_cam_sku_update.sql"
-        try:
-            with open(sql_file_path, "r") as f:
-                merge_query_template = f.read()
+        if not DRY_RUN:
+            storage_client = storage.Client(project=PROJECT_ID)
+            bucket = storage_client.bucket(AIM_BUCKET_NAME)
+            bucket.blob(cam_blob_path).upload_from_filename(local_cam_csv)
+            logging.info(f"✅ Uploaded to gs://{AIM_BUCKET_NAME}/{cam_blob_path}")
             
-            # Inject dynamic table names
-            merge_query = merge_query_template.format(
-                cam_table_id=cam_table_id,
-                staging_table_id=staging_table_id
+            # We need a staging table for the MERGE
+            staging_table_id = f"{PROJECT_ID}.CAM_files.CAM_SKU_staging_{run_date}"
+            
+            bq_client = bigquery.Client(project=PROJECT_ID)
+            
+            # 1. Load to staging
+            job_config_cam = bigquery.LoadJobConfig(
+                source_format=bigquery.SourceFormat.CSV,
+                skip_leading_rows=1,
+                autodetect=False,
+                write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+                schema=[
+                    bigquery.SchemaField("Vehicle", "STRING"),
+                    bigquery.SchemaField("Size", "STRING"),
+                    bigquery.SchemaField("Make", "STRING"),
+                    bigquery.SchemaField("Model", "STRING"),
+                    bigquery.SchemaField("Width", "STRING"),
+                    bigquery.SchemaField("Profile", "STRING"),
+                    bigquery.SchemaField("Rim", "STRING"),
+                    bigquery.SchemaField("last_modified", "TIMESTAMP"),
+                    *[bigquery.SchemaField(f"SKU{i}", "STRING") for i in range(1, 25)],
+                ]
             )
-            
-            merge_job = bq_client.query(merge_query)
-        except Exception as e:
-            logging.error(f"❌ Failed to prepare/execute MERGE query: {e}")
-            return
-        merge_job.result()
-        logging.info(f"✅ Upserted (MERGE) data into {cam_table_id}")
-        
-        # Cleanup staging?
-        bq_client.delete_table(staging_table_id, not_found_ok=True)
-        logging.info("🧹 Deleted staging table.")
+            uri_cam = f"gs://{AIM_BUCKET_NAME}/{cam_blob_path}"
+            load_job = bq_client.load_table_from_uri(uri_cam, staging_table_id, job_config=job_config_cam)
+            load_job.result()
+            logging.info(f"✅ Loaded staging table {staging_table_id}")
 
-    else:
-        logging.info(f"🚧 DRY RUN: Would upload/load CAM_SKU to {cam_table_id} via MERGE.")
+            # 1.5 Safety Check: Impact Analysis
+            # Count Matches vs New Rows
+            check_query = f"""
+            SELECT 
+                COUNT(*) as total_staging,
+                COUNTIF(T.Make IS NOT NULL) as matching_rows
+            FROM `{staging_table_id}` S
+            LEFT JOIN (
+                SELECT Make, Model, Width, Profile, Rim 
+                FROM `{cam_table_id}`
+            ) T
+            ON 
+               -- Vehicle Match
+               UPPER(TRIM(CONCAT(IFNULL(T.Make,''), ' ', IFNULL(T.Model,'')))) = UPPER(TRIM(S.Vehicle))
+               AND
+               -- Size Match
+               UPPER(TRIM(CONCAT(IFNULL(T.Width,''), '/', IFNULL(T.Profile,''), ' R', IFNULL(T.Rim,'')))) = UPPER(TRIM(S.Size))
+            """
+            try:
+                check_job = bq_client.query(check_query)
+                row = list(check_job.result())[0]
+                total = row['total_staging']
+                matched = row['matching_rows']
+                new_rows = total - matched
+                logging.info(f"🔍 Impact Analysis: {total} staging rows. {matched} will UPDATE existing. {new_rows} will INSERT new.")
+            except Exception as e:
+                logging.warning(f"⚠️ Could not run impact analysis (table might be empty or new): {e}")
+
+            # 2. Perform MERGE
+            # Updated: Read SQL from external file for maintainability
+            sql_file_path = "aim_cam_sku_update.sql"
+            try:
+                with open(sql_file_path, "r") as f:
+                    merge_query_template = f.read()
+                
+                # Inject dynamic table names
+                merge_query = merge_query_template.format(
+                    cam_table_id=cam_table_id,
+                    staging_table_id=staging_table_id
+                )
+                
+                merge_job = bq_client.query(merge_query)
+                merge_job.result()
+                logging.info(f"✅ Upserted (MERGE) data into {cam_table_id}")
+            except Exception as e:
+                logging.error(f"❌ Failed to prepare/execute MERGE query: {e}")
+            finally:
+                # Cleanup staging?
+                bq_client.delete_table(staging_table_id, not_found_ok=True)
+                logging.info("🧹 Deleted staging table.")
+
+        else:
+            logging.info(f"🚧 DRY RUN: Would upload/load CAM_SKU to {cam_table_id} via MERGE.")
+    except Exception as e:
+        logging.error(f"❌ Stage 4 (CAM SKU Merge) failed partway: {e}")
 
 def run_stage_5():
     """Executes Stage 5: Dashboard Updater (SQL)."""
@@ -892,11 +911,23 @@ def run_stage_9():
         logging.error(f"❌ Failed to execute Stage 9 SQL: {e}")
 
 if __name__ == "__main__":
-    run_stage_1()
-    run_stage_3()
-    run_stage_4()
-    run_stage_5()
-    run_stage_6()
-    run_stage_7()
-    run_stage_8()
-    run_stage_9()
+    stages = [
+        ("Stage 1", run_stage_1),
+        ("Stage 3", run_stage_3),
+        ("Stage 4", run_stage_4),
+        ("Stage 5", run_stage_5),
+        ("Stage 6", run_stage_6),
+        ("Stage 7", run_stage_7),
+        ("Stage 8", run_stage_8),
+        ("Stage 9", run_stage_9),
+    ]
+
+    for name, func in stages:
+        try:
+            logging.info(f"🚀 Starting {name}...")
+            func()
+            logging.info(f"✅ {name} completed.")
+        except Exception as e:
+            logging.error(f"❌ {name} failed: {e}")
+            logging.info(f"⏭ Skipping to next stage...")
+            continue
