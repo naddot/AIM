@@ -78,3 +78,32 @@ export const saveConfigurationAndRun = async (params: NotebookParams): Promise<N
     throw error;
   }
 };
+
+/**
+ * Checks the status of the Cloud Run job.
+ */
+export const getJobStatus = async (): Promise<{
+  isActive: boolean;
+  executionId: string | null;
+  state: string | null;
+  startTime: string | null;
+  lastChecked: string;
+}> => {
+  try {
+    const response = await fetch('/api/job-status');
+    if (!response.ok) {
+      throw new Error(`Status check failed: ${response.statusText}`);
+    }
+    return await response.json();
+  } catch (error) {
+    console.error("Job status check failed:", error);
+    // Default to inactive on error to allow user to try again (or handle error in UI)
+    return {
+      isActive: false,
+      executionId: null,
+      state: null,
+      startTime: null,
+      lastChecked: new Date().toISOString()
+    };
+  }
+};

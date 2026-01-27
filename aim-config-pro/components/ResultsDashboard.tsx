@@ -9,9 +9,6 @@ interface ResultsDashboardProps {
   onReset: () => void;
 }
 
-const DEFAULT_RUN_DAYS = [2, 5]; // Tuesday, Friday
-const DEFAULT_RUN_HOUR = 6; // 6 AM
-
 const CONFIG_LABELS: Record<keyof NotebookParams, string> = {
   TOTAL_PER_SEGMENT: "Total Per Segment",
   GOLDILOCKS_ZONE_PCT: "Goldilocks Zone (%)",
@@ -23,64 +20,8 @@ const CONFIG_LABELS: Record<keyof NotebookParams, string> = {
   LIMIT_TO_SEGMENTS: "Limit To Segments",
 };
 
-function parseRunDays(): number[] {
-  const raw = import.meta.env.VITE_AIM_RUN_DAYS as string | undefined;
-  if (!raw) return DEFAULT_RUN_DAYS;
-  const parsed = raw
-    .split(",")
-    .map((s) => Number.parseInt(s.trim(), 10))
-    .filter((n) => Number.isInteger(n) && n >= 0 && n <= 6);
-  return parsed.length ? parsed : DEFAULT_RUN_DAYS;
-}
-
-function parseRunHour(): number {
-  const raw = import.meta.env.VITE_AIM_RUN_HOUR as string | undefined;
-  const n = raw ? Number.parseInt(raw, 10) : NaN;
-  if (Number.isInteger(n) && n >= 0 && n <= 23) return n;
-  return DEFAULT_RUN_HOUR;
-}
-
-function getNextRun(runDays: number[], runHour: number, now = new Date()): Date {
-  let next: Date | null = null;
-  runDays.forEach((day) => {
-    const candidate = new Date(now);
-    candidate.setHours(runHour, 0, 0, 0);
-    const diff = (day - candidate.getDay() + 7) % 7 || 7;
-    candidate.setDate(candidate.getDate() + (candidate <= now ? diff : diff % 7));
-    if (!next || candidate < next) next = candidate;
-  });
-  return next || now;
-}
-
-function formatRunDate(d: Date): string {
-  return d.toLocaleString(undefined, {
-    weekday: 'long',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZoneName: 'short',
-  });
-}
-
-function formatRunSchedule(runDays: number[], runHour: number): string {
-  const names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-  const unique = Array.from(new Set(runDays)).sort((a, b) => a - b);
-  const dayList =
-    unique.length > 1
-      ? `${names[unique[0]]} and ${names[unique[1]]}`
-      : names[unique[0]] ?? "Unknown day";
-  const hour = runHour.toString().padStart(2, "0");
-  return `${dayList} at ${hour}:00`;
-}
-
 export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data, config, onReset }) => {
   if (!data) return null;
-  const runDays = parseRunDays();
-  const runHour = parseRunHour();
-  const nextRun = getNextRun(runDays, runHour);
-  const nextRunLabel = formatRunDate(nextRun);
-  const scheduleLabel = formatRunSchedule(runDays, runHour);
 
   const configEntries = config
     ? (Object.keys(CONFIG_LABELS) as (keyof NotebookParams)[]).map((key) => {
@@ -157,13 +98,6 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data, config
         </div>
       </div>
 
-      {/* Schedule */}
-      <div className="w-full max-w-lg bg-slate-50 border border-slate-200 rounded-lg p-4 mb-6 text-left">
-        <div className="text-xs font-semibold text-slate-500 uppercase mb-1">Next Scheduled Run</div>
-        <div className="text-sm text-slate-800">{nextRunLabel}</div>
-        <div className="text-xs text-slate-500 mt-1">Runs every {scheduleLabel}.</div>
-      </div>
-
       {/* Submitted Config */}
       {configEntries.length > 0 && (
         <div className="w-full max-w-lg bg-white border border-slate-200 rounded-lg p-4 mb-6 text-left shadow-sm">
@@ -181,7 +115,10 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data, config
 
       {/* Job Trigger Result */}
       {jobResult && (
-        <div className={`w-full max-w-lg p-4 mb-6 rounded-lg text-left border ${jobResult.success ? 'bg-green-50 border-green-200 text-green-800' : 'bg-red-50 border-red-200 text-red-800'}`}>
+        <div
+          className={`w-full max-w-lg p-4 mb-6 rounded-lg text-left border ${jobResult.success ? 'bg-green-50 border-green-200 text-green-800' : 'bg-red-50 border-red-200 text-red-800'
+            }`}
+        >
           <div className="flex items-center gap-2 font-semibold">
             {jobResult.success ? <CheckCircle2 size={18} /> : <Terminal size={18} />}
             {jobResult.success ? "Success" : "Error"}

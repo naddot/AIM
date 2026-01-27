@@ -1,3 +1,4 @@
+import "dotenv/config"; // Load environment variables first
 import express from "express";
 import { GoogleAuth } from "google-auth-library";
 import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
@@ -6,7 +7,7 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { Storage } from "@google-cloud/storage";
-import { JobsClient } from "@google-cloud/run";
+import { getActiveExecution, triggerJob } from "./services/cloudRunJobs.js"; // Note: .js extension for ES modules if needed, or tsx handles resolution
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,6 +24,7 @@ console.log("\n================================================");
 console.log("🚀 SERVER STARTING");
 console.log(`📅 Timestamp: ${new Date().toISOString()}`);
 console.log(`📂 Working Dir: ${process.cwd()}`);
+console.log(`🌍 Env Check: PROJECT_ID=${process.env.PROJECT_ID}, REGION=${process.env.REGION}, JOB_NAME=${process.env.JOB_NAME}`);
 console.log("================================================\n");
 
 // Middleware
@@ -45,6 +47,20 @@ const SECRET_NAME = "projects/829092209663/secrets/AIM-config-growth-update/vers
 
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// Check Job Status
+app.get("/api/job-status", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  try {
+    const since = req.query.since as string | undefined;
+    const status = await getActiveExecution(since);
+    res.json(status);
+  } catch (err: any) {
+    console.error("[/api/job-status] ERROR:", err?.stack || err);
+    // Don't just return 500, try to return a meaningful error that the UI can withstand
+    res.status(500).json({ error: "Job status check failed", details: err?.message || String(err) });
+  }
 });
 
 // Fetch Current Config from GCS
@@ -100,37 +116,28 @@ app.post("/api/trigger-job", async (req, res) => {
   console.log(`\n[${new Date().toISOString()}] 🚀 Triggering Cloud Run Job`);
 
   try {
-    const projectId = process.env.PROJECT_ID;
-    const region = process.env.REGION || "europe-west2";
-    const jobName = process.env.JOB_NAME || "aim-growth-job";
-
-    if (!projectId) {
-      throw new Error("PROJECT_ID environment variable is not set.");
-    }
-
-    const client = new JobsClient();
-    const name = `projects/${projectId}/locations/${region}/jobs/${jobName}`;
-
-    console.log(`Target Job: ${name}`);
-
-    const request = {
-      name,
-    };
-
-    // Run the job
-    const [operation] = await client.runJob(request);
-    console.log(`✅ Job triggered successfully. Operation: ${operation.name}`);
+    const result = await triggerJob();
+    console.log(`✅ Job triggered successfully. Operation: ${result.operation}`);
 
     res.json({
       success: true,
       message: "Job triggered successfully",
-      operation: operation.name,
-      job: name
+      operation: result.operation,
+      job: result.job
     });
 
   } catch (err: any) {
-    console.error("❌ Job Trigger Error:", err.message);
-    res.status(500).json({ error: "Failed to trigger job", details: err.message });
+    if (err.code === 409) {
+      console.warn(`🛑 BLOCKED: Job is already running (Execution: ${err.executionId})`);
+      res.status(409).json({
+        error: err.message,
+        executionId: err.executionId,
+        startTime: err.startTime
+      });
+    } else {
+      console.error("❌ Job Trigger Error:", err.message);
+      res.status(500).json({ error: "Failed to trigger job", details: err.message });
+    }
   }
 });
 

@@ -6,9 +6,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      // Forward request to the local server.ts
-      '/api/save-config': {
-        target: 'http://localhost:8080',
+      // Forward ALL api requests to the local server.ts
+      '/api': {
+        target: 'http://localhost:8081',
         changeOrigin: true,
         secure: false,
       },

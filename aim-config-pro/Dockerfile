@@ -16,6 +16,7 @@ RUN npm run build
 
 # Expose port
 ENV PORT=8080
+ENV USE_GCLOUD_CLI=false
 EXPOSE 8080
 
 # Start the server
