@@ -164,7 +164,7 @@ WITH
     FROM
       `bqsqltesting.nexus_tyrescore.CarMakeModelSales` AS sales
     JOIN
-      `bqsqltesting.nexus_tyrescore.TyreScore` AS ts ON CAST(sales.ProductId AS INT64) = ts.ProductId -- Kept as INT64 comparison, assuming ts.ProductId is INT64
+      `bqsqltesting.nexus_tyrescore.TyreScore` AS ts ON sales.ProductId = CAST(ts.ProductId AS STRING) -- Treated as STRING
     WHERE
       CAST(sales.Units AS INT64) > 0
     GROUP BY
@@ -178,7 +178,7 @@ WITH
     FROM
       `bqsqltesting.nexus_tyrescore.CarMakeModelSales` AS sales
     JOIN
-      `bqsqltesting.nexus_tyrescore.TyreScore` AS ts ON CAST(sales.ProductId AS INT64) = ts.ProductId -- Kept as INT64 comparison
+      `bqsqltesting.nexus_tyrescore.TyreScore` AS ts ON sales.ProductId = CAST(ts.ProductId AS STRING) -- Treated as STRING
     WHERE
       CAST(sales.Units AS INT64) > 0
     GROUP BY
@@ -194,7 +194,7 @@ WITH
     FROM
       `bqsqltesting.nexus_tyrescore.CarMakeModelSales` AS sales
     JOIN
-      `bqsqltesting.nexus_tyrescore.TyreScore` AS ts ON CAST(sales.ProductId AS INT64) = ts.ProductId -- Kept as INT64 comparison
+      `bqsqltesting.nexus_tyrescore.TyreScore` AS ts ON sales.ProductId = CAST(ts.ProductId AS STRING) -- Treated as STRING
     WHERE
       CAST(sales.Units AS INT64) > 0
     GROUP BY
@@ -253,7 +253,7 @@ WITH
     FROM
       `bqsqltesting.nexus_tyrescore.CarMakeModelSales` AS sales
     JOIN
-      `bqsqltesting.nexus_tyrescore.TyreScore` AS ts ON CAST(sales.ProductId AS INT64) = ts.ProductId -- Kept as INT64 comparison
+      `bqsqltesting.nexus_tyrescore.TyreScore` AS ts ON sales.ProductId = CAST(ts.ProductId AS STRING) -- Treated as STRING
     LEFT JOIN
       `bqsqltesting.Reference_Tables.Product_catalogue` AS pc ON CAST(ts.ProductId AS STRING) = pc.SKU -- Changed: Cast ts.ProductId to STRING to match pc.SKU
     WHERE
@@ -354,7 +354,7 @@ SELECT
 FROM
   TYRESCORE
 LEFT JOIN
-  CLICKSTREAM CS ON CAST(CS.SKU AS INT64) = TYRESCORE.ProductId
+  CLICKSTREAM CS ON CAST(CS.SKU AS STRING) = CAST(TYRESCORE.ProductId AS STRING)
   AND CS.Vehicle = TYRESCORE.Vehicle
 LEFT JOIN
   AVG_PRICES AP ON TYRESCORE.Vehicle = AP.Vehicle
