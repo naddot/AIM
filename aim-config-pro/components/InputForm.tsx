@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { NotebookParams, Season } from '../types';
+import { NotebookParams, Season, RunMode } from '../types';
 import { RotateCcw, Save, XCircle, Eye, EyeOff, FileJson, Terminal, CheckCircle2 } from 'lucide-react';
 
 interface InputFormProps {
@@ -8,7 +8,10 @@ interface InputFormProps {
 }
 
 const initialParams: NotebookParams = {
+  RUN_MODE: RunMode.Global,
   TOTAL_PER_SEGMENT: 1000,
+  TOTAL_OVERALL: 10000,
+  BATCH_SIZE: 50, // Locked
   GOLDILOCKS_ZONE_PCT: 15,
   PRICE_FLUCTUATION_UPPER: 1.1,
   PRICE_FLUCTUATION_LOWER: 0.9,
@@ -180,39 +183,77 @@ export const InputForm: React.FC<InputFormProps> = ({ onSubmit, isLoading }) => 
           )}
         </div>
 
-        {/* Metric Inputs */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Run Mode & Metric Inputs */}
+        <div className="space-y-4">
           <div className="space-y-2">
             <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Total Per Segment
+              Run Mode
             </label>
-            <input
-              type="number"
-              name="TOTAL_PER_SEGMENT"
-              value={formData.TOTAL_PER_SEGMENT}
+            <select
+              name="RUN_MODE"
+              value={formData.RUN_MODE}
               onChange={handleChange}
-              className="w-full px-4 py-2 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-              required
-            />
-            {errors.totalPerSegment && (
-              <p className="text-xs text-red-600">{errors.totalPerSegment}</p>
-            )}
+              className="w-full px-4 py-2 bg-slate-100 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none appearance-none cursor-pointer font-medium"
+            >
+              <option value={RunMode.PerSegment}>Per-Segment (Legacy)</option>
+              <option value={RunMode.Global}>Global Priority (GCS Runlist)</option>
+            </select>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Goldilocks Zone (%)
-            </label>
-            <div className="relative">
-              <input
-                type="number"
-                name="GOLDILOCKS_ZONE_PCT"
-                value={formData.GOLDILOCKS_ZONE_PCT}
-                onChange={handleChange}
-                className="w-full px-4 py-2 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all pr-8"
-                required
-              />
-              <span className="absolute right-3 top-2 text-slate-400">%</span>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {formData.RUN_MODE === RunMode.PerSegment ? (
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Total Per Segment
+                </label>
+                <input
+                  type="number"
+                  name="TOTAL_PER_SEGMENT"
+                  value={formData.TOTAL_PER_SEGMENT}
+                  onChange={handleChange}
+                  className="w-full px-4 py-2 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                  required
+                />
+                {errors.totalPerSegment && (
+                  <p className="text-xs text-red-600">{errors.totalPerSegment}</p>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Total Overall
+                  </label>
+                  <input
+                    type="number"
+                    name="TOTAL_OVERALL"
+                    value={formData.TOTAL_OVERALL}
+                    onChange={handleChange}
+                    className="w-full px-4 py-2 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                    required
+                  />
+                </div>
+                <div className="space-y-2">
+                  {/* BATCH_SIZE is locked to 50 and hidden from UI */}
+                </div>
+              </>
+            )}
+
+            <div className="space-y-2">
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Goldilocks Zone (%)
+              </label>
+              <div className="relative">
+                <input
+                  type="number"
+                  name="GOLDILOCKS_ZONE_PCT"
+                  value={formData.GOLDILOCKS_ZONE_PCT}
+                  onChange={handleChange}
+                  className="w-full px-4 py-2 bg-slate-50 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all pr-8"
+                  required
+                />
+                <span className="absolute right-3 top-2 text-slate-400">%</span>
+              </div>
             </div>
           </div>
         </div>

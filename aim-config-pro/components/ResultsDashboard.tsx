@@ -10,7 +10,10 @@ interface ResultsDashboardProps {
 }
 
 const CONFIG_LABELS: Record<keyof NotebookParams, string> = {
+  RUN_MODE: "Run Mode",
   TOTAL_PER_SEGMENT: "Total Per Segment",
+  TOTAL_OVERALL: "Total Overall",
+  BATCH_SIZE: "Batch Size",
   GOLDILOCKS_ZONE_PCT: "Goldilocks Zone (%)",
   PRICE_FLUCTUATION_UPPER: "Price Fluctuation Upper",
   PRICE_FLUCTUATION_LOWER: "Price Fluctuation Lower",
@@ -24,14 +27,30 @@ export const ResultsDashboard: React.FC<ResultsDashboardProps> = ({ data, config
   if (!data) return null;
 
   const configEntries = config
-    ? (Object.keys(CONFIG_LABELS) as (keyof NotebookParams)[]).map((key) => {
-      let val: string | number = (config as any)[key];
+    ? (Object.keys(CONFIG_LABELS) as (keyof NotebookParams)[]).flatMap((key) => {
+      let val: string | number | undefined = (config as any)[key];
+
+      // Logic to hide irrelevant keys based on mode
+      if (config.RUN_MODE === "GLOBAL") {
+        if (key === "TOTAL_PER_SEGMENT") return []; // Hide
+      } else {
+        // PER_SEGMENT
+        if (key === "TOTAL_OVERALL") return []; // Hide
+        // We might also hide BATCH_SIZE if it's not relevant for Per-Segment, but it is locked to 50 in InputForm anyway.
+      }
+
       if (key === "LIMIT_TO_SEGMENTS") {
         val = val ? val : "All segments";
       } else if (key === "SEASON") {
         val = val || "None";
       }
-      return { label: CONFIG_LABELS[key], value: val };
+
+      // If value is undefined (because we cleaned payload and types are optional/loose), skip or show placeholder.
+      if (val === undefined || val === null) {
+        return [];
+      }
+
+      return [{ label: CONFIG_LABELS[key], value: val }];
     })
     : [];
 

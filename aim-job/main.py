@@ -1,0 +1,1338 @@
+import os
+import time
+import json
+import logging
+import asyncio
+import httpx
+import pandas as pd
+import math
+import re
+import datetime as dt
+import tempfile
+from typing import List
+from bs4 import BeautifulSoup
+from google.cloud import bigquery
+from google.cloud import storage
+from io import StringIO
+from dotenv import load_dotenv
+from dotenv import load_dotenv
+import uuid
+import google.auth.transport.requests
+import google.oauth2.id_token
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# --------------------------------------------------------------------------------------
+# CONFIG (override with env vars in Cloud Run Job)
+# --------------------------------------------------------------------------------------
+
+# Dry Run Mode: If True, skips all write operations (BQ, GCS)
+DRY_RUN = os.getenv("DRY_RUN", "False").lower() in ("true", "1", "t")
+
+PROJECT_ID = os.getenv("PROJECT_ID", "bqsqltesting")
+
+# Stage 2 – TyreScore CSVs in GCS
+TYRESCORE_BUCKET = os.getenv("TYRESCORE_BUCKET", "tyrescore")
+TYRESCORE_PREFIX = os.getenv("TYRESCORE_PREFIX", "tyrescore-AWS3-daily-files/")
+TYRESCORE_FILE_EXTENSION = os.getenv("TYRESCORE_FILE_EXTENSION", ".csv")
+
+# Stage 4 – AIM batch runner config
+AIM_BASE_URL = os.getenv(
+    "AIM_BASE_URL",
+    "https://aim-engine-829092209663.europe-west1.run.app",
+)
+AIM_PAGE_SIZE = int(os.getenv("AIM_PAGE_SIZE", "45"))
+AIM_TOTAL_PER_SEGMENT = int(os.getenv("AIM_TOTAL_PER_SEGMENT", "500"))
+AIM_PARALLEL_SEGMENTS = int(os.getenv("AIM_PARALLEL_SEGMENTS", "7"))
+AIM_REQUESTS_PER_SEGMENT = int(os.getenv("AIM_REQUESTS_PER_SEGMENT", "4"))
+AIM_REQUEST_TIMEOUT_S = int(os.getenv("AIM_REQUEST_TIMEOUT_S", "900"))
+
+AIM_GOLDILOCKS_ZONE_PCT = int(os.getenv("AIM_GOLDILOCKS_ZONE_PCT", "15"))
+AIM_PRICE_FLUCT_UPPER = float(os.getenv("AIM_PRICE_FLUCT_UPPER", "1.1"))
+AIM_PRICE_FLUCT_LOWER = float(os.getenv("AIM_PRICE_FLUCT_LOWER", "0.9"))
+AIM_BRAND_ENHANCER = os.getenv("AIM_BRAND_ENHANCER", "").strip()
+AIM_MODEL_ENHANCER = os.getenv("AIM_MODEL_ENHANCER", "").strip()
+AIM_SEASON = os.getenv("AIM_SEASON", "").strip()  # "", "AllSeason", "Winter", "Summer"
+
+# Comma-separated list of segment names or empty for all
+AIM_LIMIT_SEGMENTS_ENV = os.getenv("AIM_LIMIT_SEGMENTS", "").strip()
+if AIM_LIMIT_SEGMENTS_ENV:
+    AIM_LIMIT_SEGMENTS: List[str] = [
+        s.strip() for s in AIM_LIMIT_SEGMENTS_ENV.split(",") if s.strip()
+    ]
+else:
+    AIM_LIMIT_SEGMENTS = []
+
+AIM_SERVICE_PASSWORD = os.getenv("AIM_SERVICE_PASSWORD", "!BlU35qU4R3!")
+
+# Global Mode Configuration
+AIM_RUN_MODE = os.getenv("AIM_RUN_MODE", "PER_SEGMENT").upper() # PER_SEGMENT or GLOBAL
+AIM_TOTAL_OVERALL = int(os.getenv("AIM_TOTAL_OVERALL", "10000"))
+AIM_BATCH_SIZE = int(os.getenv("AIM_BATCH_SIZE", "500"))
+AIM_PRIORITY_RUNLIST_GCS_URI = os.getenv(
+    "AIM_PRIORITY_RUNLIST_GCS_URI", 
+    "gs://aim-home/aim-priority-runlist/priority_runlist_current.csv"
+)
+
+# Stage 4 – GCS / BQ outputs
+AIM_BUCKET_NAME = os.getenv("AIM_BUCKET_NAME", "aim-home")
+AIM_GCS_PREFIX = os.getenv("AIM_GCS_PREFIX", "aim-daily-files")
+AIM_DATASET_ID = os.getenv("AIM_DATASET_ID", "AIM")
+AIM_TABLE_ID = os.getenv("AIM_TABLE_ID", "AIMData")
+AIM_BQ_WRITE_DISPOSITION = os.getenv("AIM_BQ_WRITE_DISPOSITION", "WRITE_TRUNCATE")
+
+# --------------------------------------------------------------------------------------
+# LOCAL DEMO MODE CONFIG
+# --------------------------------------------------------------------------------------
+AIM_MODE = os.getenv("AIM_MODE", "cloud").lower()  # "local" or "cloud"
+AIM_LOCAL_ROOT = os.getenv("AIM_LOCAL_ROOT", "./demo")
+AIM_WAVES_URL = os.getenv("AIM_WAVES_URL", AIM_BASE_URL)
+
+if AIM_MODE == "local":
+    logging.info(f"🏡 LOCAL MODE ACTIVE. Local Root: {AIM_LOCAL_ROOT}")
+    AIM_BASE_URL = AIM_WAVES_URL
+
+# Optional: GCS URI for dynamic configuration
+CONFIG_GCS_URI = os.getenv("CONFIG_GCS_URI")
+IGNORE_GCS_CONFIG = os.getenv("IGNORE_GCS_CONFIG", "False").lower() in ("true", "1", "t")
+
+class StatusTracker:
+    """Authoritative state tracker for Local Mode. Writes to job_status.json."""
+    def __init__(self, run_id: str):
+        self.run_id = run_id
+        # Use simple os.path.join for Windows compatibility
+        self.status_file = os.path.join(AIM_LOCAL_ROOT, "output", "job_status.json")
+        self.data = {
+            "state": "idle",
+            "run_id": run_id,
+            "started_at": None,
+            "ended_at": None,
+            "heartbeat_ts": None,
+            "last_log_line": "Initialized",
+            "output_file": None,
+            "error_summary": None,
+            "progress": {"attempted": 0, "succeeded": 0, "failed": 0}
+        }
+        if AIM_MODE == "local":
+            self._ensure_dir()
+
+    def _ensure_dir(self):
+        os.makedirs(os.path.dirname(self.status_file), exist_ok=True)
+
+    def update(self, state=None, last_log_line=None, error_summary=None, progress=None, output_file=None, report=None):
+        if AIM_MODE != "local": return
+        
+        now = dt.datetime.now().isoformat()
+        self.data["heartbeat_ts"] = now
+        
+        if state: 
+            self.data["state"] = state
+            if state == "running" and not self.data["started_at"]:
+                self.data["started_at"] = now
+            elif state in ("success", "failed"):
+                self.data["ended_at"] = now
+                
+        if last_log_line: self.data["last_log_line"] = last_log_line
+        if error_summary: self.data["error_summary"] = error_summary
+        if progress: self.data["progress"].update(progress)
+        if output_file: self.data["output_file"] = output_file
+        if report: self.data["report"] = report
+        
+        try:
+            with open(self.status_file, "w") as f:
+                json.dump(self.data, f, indent=2)
+        except Exception as e:
+            logging.error(f"❌ Failed to write status file: {e}")
+
+    def heartbeat(self):
+        """Simple heartbeat update."""
+        self.update()
+
+# Global status instance
+TRACKER = StatusTracker(dt.datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + str(uuid.uuid4())[:4])
+
+def load_and_apply_gcs_config():
+    """Attempts to load config from GCS and override global variables."""
+    global AIM_TOTAL_PER_SEGMENT, AIM_GOLDILOCKS_ZONE_PCT
+    global AIM_PRICE_FLUCT_UPPER, AIM_PRICE_FLUCT_LOWER
+    global AIM_BRAND_ENHANCER, AIM_MODEL_ENHANCER, AIM_SEASON, AIM_LIMIT_SEGMENTS
+    global AIM_RUN_MODE, AIM_TOTAL_OVERALL, AIM_BATCH_SIZE, AIM_PRIORITY_RUNLIST_GCS_URI
+    global KNOWN_MAKES
+
+    if IGNORE_GCS_CONFIG:
+        logging.info("ℹ️ IGNORE_GCS_CONFIG is True. Skipping GCS config load.")
+        return
+
+    config = {} # Initialize config dict
+    if AIM_MODE == "local":
+        config_path = os.path.join(AIM_LOCAL_ROOT, "config", "aim-config.json")
+        logging.info(f"⬇️ Loading local config from {config_path}...")
+        try:
+            with open(config_path, "r") as f:
+                config = json.load(f)
+            logging.info("✅ Local config loaded successfully. Applying overrides...")
+        except FileNotFoundError:
+            logging.warning(f"⚠️ Local config file {config_path} not found. Using defaults.")
+            return
+        except Exception as e:
+            logging.error(f"❌ Failed to load local config: {e}. Using defaults.")
+            return
+    else: # Cloud mode
+        if not CONFIG_GCS_URI:
+            logging.info("ℹ️ CONFIG_GCS_URI not set. Using environment variables.")
+            return
+
+        logging.info(f"⬇️ Attempting to download config from {CONFIG_GCS_URI}...")
+        try:
+            # Parse bucket and blob name from URI
+            if not CONFIG_GCS_URI.startswith("gs://"):
+                raise ValueError("CONFIG_GCS_URI must start with gs://")
+            
+            uri_parts = CONFIG_GCS_URI.replace("gs://", "").split("/", 1)
+            if len(uri_parts) != 2:
+                raise ValueError("Invalid GCS URI format")
+                
+            bucket_name, blob_name = uri_parts
+            
+            storage_client = storage.Client(project=PROJECT_ID)
+            bucket = storage_client.bucket(bucket_name)
+            blob = bucket.blob(blob_name)
+            
+            if not blob.exists():
+                logging.warning(f"⚠️ Config file {CONFIG_GCS_URI} not found. Using defaults.")
+                return
+
+            config_str = blob.download_as_text()
+            config = json.loads(config_str)
+            logging.info("✅ Config downloaded and parsed successfully. Applying overrides...")
+
+        except Exception as e:
+            logging.error(f"❌ Failed to load/apply config from GCS: {e}. Using defaults.")
+            return
+
+    # Helper to safely apply config
+    def apply_val(key, var_name, cast_func):
+        if key in config:
+            try:
+                val = cast_func(config[key])
+                logging.info(f"   🔹 Overriding {var_name}: {val}")
+                return val
+            except Exception as e:
+                logging.warning(f"   ⚠️ Invalid value for {key} in config: {config[key]} ({e}). Keeping default.")
+        return None
+
+    # Apply overrides with granular fallback
+    val = apply_val("TOTAL_PER_SEGMENT", "AIM_TOTAL_PER_SEGMENT", int)
+    if val is not None: AIM_TOTAL_PER_SEGMENT = val
+
+    val = apply_val("GOLDILOCKS_ZONE_PCT", "AIM_GOLDILOCKS_ZONE_PCT", int)
+    if val is not None: AIM_GOLDILOCKS_ZONE_PCT = val
+
+    val = apply_val("PRICE_FLUCTUATION_UPPER", "AIM_PRICE_FLUCT_UPPER", float)
+    if val is not None: AIM_PRICE_FLUCT_UPPER = val
+
+    val = apply_val("PRICE_FLUCTUATION_LOWER", "AIM_PRICE_FLUCT_LOWER", float)
+    if val is not None: AIM_PRICE_FLUCT_LOWER = val
+
+    val = apply_val("BRAND_ENHANCER", "AIM_BRAND_ENHANCER", lambda x: str(x).strip())
+    if val is not None: AIM_BRAND_ENHANCER = val
+
+    val = apply_val("MODEL_ENHANCER", "AIM_MODEL_ENHANCER", lambda x: str(x).strip())
+    if val is not None: AIM_MODEL_ENHANCER = val
+
+    val = apply_val("SEASON", "AIM_SEASON", lambda x: str(x).strip())
+    if val is not None: AIM_SEASON = val
+    
+    if "LIMIT_TO_SEGMENTS" in config:
+        try:
+            limit_to = config["LIMIT_TO_SEGMENTS"]
+            if isinstance(limit_to, list):
+                AIM_LIMIT_SEGMENTS = [s.strip() for s in limit_to if s.strip()]
+            elif isinstance(limit_to, str) and limit_to.strip():
+                 AIM_LIMIT_SEGMENTS = [s.strip() for s in limit_to.split(",") if s.strip()]
+            else:
+                AIM_LIMIT_SEGMENTS = []
+            logging.info(f"   🔹 Overriding AIM_LIMIT_SEGMENTS: {AIM_LIMIT_SEGMENTS}")
+        except Exception as e:
+            logging.warning(f"   ⚠️ Invalid value for LIMIT_TO_SEGMENTS in config: {e}. Keeping default.")
+
+    val = apply_val("RUN_MODE", "AIM_RUN_MODE", lambda x: str(x).upper())
+    if val is not None: AIM_RUN_MODE = val
+
+    val = apply_val("TOTAL_OVERALL", "AIM_TOTAL_OVERALL", int)
+    if val is not None: AIM_TOTAL_OVERALL = val
+
+    val = apply_val("BATCH_SIZE", "AIM_BATCH_SIZE", int)
+    if val is not None: AIM_BATCH_SIZE = val
+
+    val = apply_val("PRIORITY_RUNLIST_GCS_URI", "AIM_PRIORITY_RUNLIST_GCS_URI", str)
+    if val is not None: AIM_PRIORITY_RUNLIST_GCS_URI = val
+
+    logging.info("✅ Configuration overrides applied.")
+
+
+# Try to load GCS config immediately
+load_and_apply_gcs_config()
+
+# Global list of known car makes to help with parsing
+KNOWN_MAKES = set()
+
+def get_exact_file(gcs_client, base_name):
+    """Checks if a file exists in GCS and returns its path."""
+    bucket = gcs_client.bucket(TYRESCORE_BUCKET)
+    blobs = list(bucket.list_blobs(prefix=TYRESCORE_PREFIX))
+    
+    # Look for file matching base_name + extension
+    target_file = f"{base_name}{TYRESCORE_FILE_EXTENSION}"
+    
+    for blob in blobs:
+        if blob.name.endswith(target_file):
+             return blob.name
+    return None
+
+def load_priority_runlist():
+    """Loads priority runlist (CSV) from GCS or Local Filesystem."""
+    df = None
+    try:
+        if AIM_MODE == "local":
+            path = os.path.join(AIM_LOCAL_ROOT, "runlist", "priority_runlist_current.csv")
+            logging.info(f"⬇️ Loading local priority runlist from {path}...")
+            df = pd.read_csv(path)
+        else:
+            logging.info(f"⬇️ Loading priority runlist from {AIM_PRIORITY_RUNLIST_GCS_URI}...")
+            if not AIM_PRIORITY_RUNLIST_GCS_URI.startswith("gs://"):
+                 raise ValueError("Priority runlist URI must start with gs://")
+            
+            uri_parts = AIM_PRIORITY_RUNLIST_GCS_URI.replace("gs://", "").split("/", 1)
+            bucket_name, blob_name = uri_parts
+            
+            storage_client = storage.Client(project=PROJECT_ID)
+            bucket = storage_client.bucket(bucket_name)
+            blob = bucket.blob(blob_name)
+            content = blob.download_as_text()
+            df = pd.read_csv(StringIO(content))
+
+        if df is None or df.empty:
+            logging.error("❌ Priority runlist is empty or failed to load.")
+            return None
+
+        # Normalization: Column names
+        df.rename(columns={"vehicle": "Vehicle", "Rank": "PriorityRank", "rank": "PriorityRank"}, inplace=True)
+
+        # Validation: Required columns
+        required = {"Vehicle", "Size", "PriorityRank"}
+        if not required.issubset(df.columns):
+            logging.error(f"❌ Priority runlist missing columns. Required: {required}. Found: {df.columns.tolist()}")
+            return None
+            
+        # Normalization
+        df["Vehicle"] = df["Vehicle"].astype(str).str.strip()
+        df["Size"] = df["Size"].astype(str).str.strip()
+        
+        # Filter out invalid rows (nan, empty)
+        df = df[~df["Vehicle"].str.lower().isin(["nan", "", "none"])]
+        df = df[~df["Size"].str.lower().isin(["nan", "", "none"])]
+
+        df["PriorityRank"] = pd.to_numeric(df["PriorityRank"], errors='coerce').fillna(99999).astype(int)
+        
+        # Sort: Lower Rank = Higher Priority (1 = highest)
+        df = df.sort_values("PriorityRank", ascending=True)
+        
+        logging.info(f"✅ Loaded {len(df)} rows from priority runlist.")
+        return df
+        
+    except Exception as e:
+        logging.error(f"❌ Failed to load priority runlist: {e}")
+        return None
+
+def run_stage_1():
+    """Executes Stage 1: S3 (simulated) to GCS to BigQuery."""
+    logging.info("Starting Stage 1...")
+    
+    bq_client = bigquery.Client(project=PROJECT_ID)
+    gcs_client = storage.Client(project=PROJECT_ID)
+
+    # -----------------------
+    # Collect valid jobs
+    # -----------------------
+    data_jobs = []
+
+    car_sales_path = get_exact_file(gcs_client, "CarMakeModelSales")
+    if car_sales_path:
+        data_jobs.append({
+            "gcs_path": f"gs://{TYRESCORE_BUCKET}/{car_sales_path}",
+            "bq_table": "nexus_tyrescore.CarMakeModelSales"
+        })
+    else:
+        logging.warning("⚠️ Skipping CarMakeModelSales: file not found.")
+
+    tyrescore_path = get_exact_file(gcs_client, "TyreScore")
+    if tyrescore_path:
+        data_jobs.append({
+            "gcs_path": f"gs://{TYRESCORE_BUCKET}/{tyrescore_path}",
+            "bq_table": "nexus_tyrescore.TyreScore"
+        })
+    else:
+        logging.warning("⚠️ Skipping TyreScore: file not found.")
+
+    # -----------------------
+    # BigQuery Load Config
+    # -----------------------
+    job_config = bigquery.LoadJobConfig(
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        autodetect=True,
+        source_format=bigquery.SourceFormat.CSV,
+        skip_leading_rows=1,  # Ignored for CarMakeModelSales because we manually define headers
+    )
+
+    # -----------------------
+    # Process uploads
+    # -----------------------
+    for job in data_jobs:
+        try:
+            logging.info(f"📂 Processing {job['gcs_path']} → {PROJECT_ID}.{job['bq_table']}")
+
+            if "CarMakeModelSales" in job['gcs_path']:
+                # Headerless file — manually assign 9 expected columns
+                expected_columns = [
+                    "ProductId", "CarMake", "CarModel",
+                    "Width", "Profile", "Rim",
+                    "Orders", "Units", "AvgPrice"
+                ]
+                df = pd.read_csv(job['gcs_path'], header=None, names=expected_columns)
+            else:
+                # TyreScore file should have headers
+                df = pd.read_csv(job['gcs_path'], header=0)
+
+            # Clean column names for BigQuery compatibility
+            df.columns = [
+                str(col).strip().replace(' ', '_').replace('.', '_').replace('-', '_')
+                for col in df.columns
+            ]
+
+            logging.info(f"🧪 Columns: {df.columns.tolist()}")
+
+            # If this is CarMakeModelSales, capture known makes
+            if "CarMake" in df.columns:
+                unique_makes = df["CarMake"].dropna().unique()
+                for mk in unique_makes:
+                    KNOWN_MAKES.add(str(mk).strip().upper())
+                logging.info(f"✅ Captured {len(unique_makes)} unique Makes for parsing logic.")
+
+            # Load into BigQuery
+            table_ref = f"{PROJECT_ID}.{job['bq_table']}"
+            
+            if not DRY_RUN:
+                load_job = bq_client.load_table_from_dataframe(df, table_ref, job_config=job_config)
+                load_job.result()
+                logging.info(f"✅ Uploaded {df.shape[0]} rows to {table_ref}")
+            else:
+                logging.info(f"🚧 DRY RUN: Would upload {df.shape[0]} rows to {table_ref}")
+
+        except Exception as e:
+            logging.error(f"❌ Failed to process {job['gcs_path']}: {e}")
+
+def run_stage_3():
+    """Executes Stage 3: TyreScore Algorithm (BigQuery SQL)."""
+    logging.info("Starting Stage 3: TyreScore Algorithm...")
+    
+    bq_client = bigquery.Client(project=PROJECT_ID)
+    
+    # Read SQL from file
+    sql_file_path = "tyrescore_algorithm.sql"
+    try:
+        with open(sql_file_path, "r") as f:
+            query = f.read()
+            
+        logging.info(f"📜 Executing SQL from {sql_file_path}...")
+        
+        if not DRY_RUN:
+            query_job = bq_client.query(query)
+            query_job.result() # Wait for the job to complete
+            logging.info("✅ Stage 3 completed successfully.")
+        else:
+            logging.info("🚧 DRY RUN: Would execute Stage 3 SQL.")
+        
+    except FileNotFoundError:
+        logging.error(f"❌ SQL file not found: {sql_file_path}")
+    except Exception as e:
+        logging.error(f"❌ Failed to execute Stage 3: {e}")
+
+# -----------------------
+# Stage 4 Helper Functions
+# -----------------------
+def log(msg):
+    logging.info(msg)
+
+def get_id_token(url):
+    """Fetches an OIDC ID token for the given URL (audience) if running in Cloud."""
+    if AIM_MODE == "local":
+        return None
+    
+    try:
+        logging.info(f"🔑 Fetching OIDC ID Token for audience: {url}")
+        auth_req = google.auth.transport.requests.Request()
+        token = google.oauth2.id_token.fetch_id_token(auth_req, url)
+        logging.info("✅ ID Token fetched successfully.")
+        return token
+    except Exception as e:
+        logging.warning(f"⚠️ Failed to fetch ID token (ignore if local or no IAM needed): {e}")
+        return None
+
+
+def _ensure_not_redirected_to_login(resp, context: str):
+    """Catch auth failures where protected endpoints bounce to /login."""
+    final_url = str(resp.url).lower()
+    if "/login" in final_url:
+        raise RuntimeError(f"{context} redirected to login (auth likely failed).")
+    for h in resp.history:
+        loc = h.headers.get("location", "").lower()
+        if h.status_code in (301, 302, 303, 307, 308) and "login" in loc:
+            raise RuntimeError(f"{context} redirected to login (auth likely failed).")
+
+async def login(client: httpx.AsyncClient):
+    # If your service needs a password/login:
+    logging.info(f"🔑 Logging in to {AIM_BASE_URL}...")
+    r = await client.post(
+        f"{AIM_BASE_URL}/login",
+        data={"password": AIM_SERVICE_PASSWORD},
+        timeout=30,
+    )
+    r.raise_for_status()
+    if not client.cookies:
+        raise RuntimeError("Login did not set any cookies; check AIM_SERVICE_PASSWORD or the expected login payload.")
+    logging.info("✅ Login successful and session cookie set.")
+
+async def fetch_segments(client: httpx.AsyncClient):
+    r = await client.get(f"{AIM_BASE_URL}/app", timeout=30)
+    r.raise_for_status()
+    _ensure_not_redirected_to_login(r, "Fetching /app for segments")
+    soup = BeautifulSoup(r.text, "html.parser")
+    sel = soup.select_one("select[name='segment']")
+    if not sel:
+        raise RuntimeError("Couldn't find segment dropdown on /app")
+    segments = [
+        o.get_text(strip=True)
+        for o in sel.find_all("option")
+        if o.get_text(strip=True) and not o.get_text(strip=True).startswith("--")
+    ]
+    if not segments:
+        raise RuntimeError("No segments parsed from /app")
+    log(f"✅ Fetched {len(segments)} segment(s) via /app dropdown.")
+    return segments
+
+async def fetch_page(client, segment, offset, retries=2):
+    params = {
+        "segment": segment,
+        "top_n": AIM_PAGE_SIZE,
+        "offset": offset,
+        "goldilocks_zone_pct": AIM_GOLDILOCKS_ZONE_PCT,
+        "price_fluctuation_upper": AIM_PRICE_FLUCT_UPPER,
+        "price_fluctuation_lower": AIM_PRICE_FLUCT_LOWER,
+        "brand_enhancer": AIM_BRAND_ENHANCER or None,
+        "model_enhancer": AIM_MODEL_ENHANCER or None,
+        "season": AIM_SEASON or None,
+    }
+    params = {k: v for k, v in params.items() if v is not None}
+
+    for attempt in range(retries + 1):
+        try:
+            r = await client.get(
+                f"{AIM_BASE_URL}/api/recommendations",
+                params=params,
+                timeout=AIM_REQUEST_TIMEOUT_S,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            if attempt == retries:
+                log(f"✖ page offset {offset} for '{segment}' failed: {e}")
+                raise
+            await asyncio.sleep(1.5 * (attempt + 1))  # small backoff
+
+async def run_segment(client, segment):
+    pages = math.ceil(AIM_TOTAL_PER_SEGMENT / AIM_PAGE_SIZE)
+    offsets = [i * AIM_PAGE_SIZE for i in range(pages)]
+    sem = asyncio.Semaphore(AIM_REQUESTS_PER_SEGMENT)
+
+    async def guarded(offset):
+        async with sem:
+            return await fetch_page(client, segment, offset)
+
+    log(f"→ {segment}: running {pages} page(s) of {AIM_PAGE_SIZE}")
+    results = await asyncio.gather(*[guarded(o) for o in offsets], return_exceptions=True)
+
+    flat, ok = [], 0
+    for res in results:
+        if isinstance(res, Exception):
+            continue
+        flat.extend(res)
+        ok += sum(1 for row in res if row.get("success"))
+    log(f"✓ {segment}: {len(flat)} rows, {ok} successful")
+    return segment, flat
+
+async def run_all_segments():
+    # Helper to get headers
+    headers = {}
+    oidc_token = get_id_token(AIM_BASE_URL)
+    if oidc_token:
+        headers["Authorization"] = f"Bearer {oidc_token}"
+
+    async with httpx.AsyncClient(follow_redirects=True, headers=headers) as client:
+        await login(client)
+        segments = await fetch_segments(client)
+        if not segments:
+            raise RuntimeError("No segments returned; authentication or parsing likely failed.")
+        
+        if AIM_LIMIT_SEGMENTS:
+            wanted = set(AIM_LIMIT_SEGMENTS)
+            segments = [s for s in segments if s in wanted]
+
+        seg_sem = asyncio.Semaphore(AIM_PARALLEL_SEGMENTS)
+        async def run_guarded(seg):
+            async with seg_sem:
+                return await run_segment(client, seg)
+
+        return await asyncio.gather(*[run_guarded(s) for s in segments])
+
+async def fetch_batch(client: httpx.AsyncClient, run_id: str, cams: List[dict], retries=2):
+    """Calls the NEW /api/recommendations/batch endpoint."""
+    params = {
+        "goldilocks_zone_pct": AIM_GOLDILOCKS_ZONE_PCT,
+        "price_fluctuation_upper": AIM_PRICE_FLUCT_UPPER,
+        "price_fluctuation_lower": AIM_PRICE_FLUCT_LOWER,
+        "brand_enhancer": AIM_BRAND_ENHANCER or None,
+        "model_enhancer": AIM_MODEL_ENHANCER or None,
+        "season": AIM_SEASON or None,
+    }
+    payload = {
+        "run_id": run_id,
+        "cams": cams,
+        "params": {k: v for k, v in params.items() if v is not None}
+    }
+
+    if AIM_MODE == "local":
+        log_path = os.path.join(AIM_LOCAL_ROOT, "logs", f"requests_{run_id}.jsonl")
+        try:
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            with open(log_path, "a") as f:
+                f.write(json.dumps(payload) + "\n")
+        except Exception as e:
+            logging.error(f"⚠️ Failed to log local request: {e}")
+
+    for attempt in range(retries + 1):
+        try:
+            r = await client.post(
+                f"{AIM_WAVES_URL}/api/recommendations/batch",
+                json=payload,
+                timeout=AIM_REQUEST_TIMEOUT_S,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            if attempt == retries:
+                logging.error(f"✖ Batch push failed for run_id {run_id}: {e}")
+                raise
+            await asyncio.sleep(2 * (attempt + 1))
+
+async def run_global_mode(client: httpx.AsyncClient):
+    """New GLOBAL mode orchestrator using priority runlist."""
+    TRACKER.update(state="running", last_log_line="Loading priority runlist...")
+    run_df = load_priority_runlist()
+    if run_df is None or run_df.empty:
+        TRACKER.update(state="failed", error_summary="Priority runlist empty or failed to load")
+        raise RuntimeError("Priority runlist is empty or failed to load. Cannot proceed in GLOBAL mode.")
+
+    # Limit to top N
+    run_df = run_df.head(AIM_TOTAL_OVERALL)
+    total_cams = len(run_df)
+    logging.info(f"🚀 Starting GLOBAL mode for top {total_cams} CAMs (Batch size: {AIM_BATCH_SIZE})")
+    TRACKER.update(last_log_line=f"Starting batch processing of {total_cams} CAMs")
+
+    # Traceability
+    run_id = f"global_{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+    
+    # Prepare CAMs list
+    all_cams = run_df[["Vehicle", "Size"]].to_dict("records")
+    
+    # Chunk into batches
+    batches = [all_cams[i : i + AIM_BATCH_SIZE] for i in range(0, total_cams, AIM_BATCH_SIZE)]
+    
+    all_results = [None] * total_cams
+    
+    total_usage = {
+        "prompt_token_count": 0,
+        "candidates_token_count": 0,
+        "total_token_count": 0
+    }
+    
+    async def process_batch_to_results(batch_cams, start_idx):
+        try:
+            batch_resp = await fetch_batch(client, run_id, batch_cams)
+            batch_results = batch_resp.get("results", [])
+            for j, res in enumerate(batch_results):
+                all_results[start_idx + j] = res
+            
+            # Aggregate usage
+            usage = batch_resp.get("usage", {})
+            for k in total_usage:
+                total_usage[k] += usage.get(k, 0)
+
+        except Exception as e:
+            logging.error(f"   ❌ Batch at {start_idx} totally failed: {e}")
+            for j, cam in enumerate(batch_cams):
+                all_results[start_idx + j] = {
+                    "Vehicle": cam.get("Vehicle"), "Size": cam.get("Size"),
+                    "success": False, "error_code": "BATCH_FAILURE"
+                }
+
+    # Process all batches (Sequential for safety per spec)
+    for i, batch in enumerate(batches):
+        logging.info(f"   📦 Processing batch {i+1}/{len(batches)}...")
+        TRACKER.update(last_log_line=f"Processing batch {i+1}/{len(batches)}")
+        await process_batch_to_results(batch, i * AIM_BATCH_SIZE)
+        
+        # Intermediate progress update
+        processed_count = (i + 1) * AIM_BATCH_SIZE
+        if processed_count > total_cams: processed_count = total_cams
+        
+        TRACKER.update(progress={
+            "attempted": processed_count,
+            "succeeded": sum(1 for r in all_results[:processed_count] if r and r.get("success")),
+            "failed": sum(1 for r in all_results[:processed_count] if r and not r.get("success"))
+        })
+
+    # RE-RUN FAILURES (Single retry pass per CAM as per plan)
+    failed_indices = [i for i, r in enumerate(all_results) if not r or not r.get("success")]
+    if failed_indices:
+        logging.info(f"   🔄 Retrying {len(failed_indices)} failed CAMs...")
+        TRACKER.update(last_log_line=f"Retrying {len(failed_indices)} failed CAMs")
+        failed_cams = [all_cams[i] for i in failed_indices]
+        # Chunk retries too
+        retry_batches = [failed_cams[i : i + AIM_BATCH_SIZE] for i in range(0, len(failed_cams), AIM_BATCH_SIZE)]
+        
+        for i, batch in enumerate(retry_batches):
+            try:
+                batch_resp = await fetch_batch(client, run_id + "_retry", batch)
+                batch_results = batch_resp.get("results", [])
+                # Map results back to original all_results indices
+                batch_start_in_failed = i * AIM_BATCH_SIZE
+                for j, res in enumerate(batch_results):
+                    # Aggregate usage from retries too
+                    usage = batch_resp.get("usage", {})
+                    for k in total_usage:
+                        total_usage[k] += usage.get(k, 0)
+                        
+                    if res.get("success"):
+                        orig_idx = failed_indices[batch_start_in_failed + j]
+                        all_results[orig_idx] = res
+            except Exception as e:
+                logging.error(f"   ❌ Retry batch {i+1} failed: {e}")
+
+    success_count = sum(1 for r in all_results if r and r.get("success"))
+    fail_count = total_cams - success_count
+    logging.info(f"🏁 GLOBAL mode complete. RunID: {run_id}, Total: {total_cams}, Success: {success_count}, Fail: {fail_count}")
+    
+    # FINAL REPORT (Cost Estimation)
+    # Gemini 2.0 Flash Pricing (approx): $0.10/1M in, $0.40/1M out
+    in_tokens = total_usage["prompt_token_count"]
+    out_tokens = total_usage["candidates_token_count"]
+    est_cost = (in_tokens * 0.0000001) + (out_tokens * 0.0000004)
+    cost_per_cam = est_cost / success_count if success_count > 0 else 0
+    
+    report = {
+        "total_tokens": total_usage["total_token_count"],
+        "prompt_tokens": in_tokens,
+        "candidates_tokens": out_tokens,
+        "estimated_cost_usd": round(est_cost, 6),
+        "cost_per_success_cam_usd": round(cost_per_cam, 6),
+        "success_rate": f"{success_count}/{total_cams}"
+    }
+    
+    logging.info(f"📊 FINAL REPORT: Tokens: {total_usage['total_token_count']:,} | Est. Cost: ${est_cost:.4f}")
+    
+    if AIM_MODE == "local":
+        report_path = os.path.join(AIM_LOCAL_ROOT, "output", "cost_report.json")
+        try:
+            with open(report_path, "w") as f:
+                json.dump(report, f, indent=2)
+            logging.info(f"✅ Cost report saved to {report_path}")
+        except Exception as e:
+            logging.error(f"⚠️ Failed to save cost report: {e}")
+
+    TRACKER.update(
+        state="success" if success_count > 0 else "failed", 
+        last_log_line=f"Completed. Success: {success_count}/{total_cams}",
+        report=report,
+        progress={
+            "attempted": total_cams,
+            "succeeded": success_count,
+            "failed": fail_count
+        }
+    )
+    return "GLOBAL", all_results
+
+def normalize_size(s: str) -> str:
+    s = str(s or "")
+    # ensure a space before R / ZR / VR, etc.
+    s = re.sub(r'(?i)(?<=\d)([A-Z]{0,2})R(?=\d)', r' \1R', s)
+    return re.sub(r'\s+', ' ', s).strip()
+
+def repair_vehicle_size(row):
+    SIZE_CORE_RE = re.compile(
+        r'''(?ix)
+        \b(
+            \d{3}/\d{2}\s*[A-Z]{0,2}R\d{2}            # 205/70R15, 225/40 ZR18
+          | \d{2}/\d{3,4}(?:\.\d{2})?\s*[A-Z]{0,2}R\d{2}  # 31/1050 R15, 31/10.50 R15
+          | \d{1,2}\.\d{2}\s*[A-Z]{0,2}R\d{2}         # 7.50 R16, 10.50 R15
+          | \d{1,2}x\d{2}\.\d{2}\s*[A-Z]{0,2}R\d{2}   # 31x10.50 R15
+        )\b
+        '''
+    )
+    v = str(row["Vehicle"] or "").strip()
+    s = str(row["Size"] or "").strip()
+
+    # If Size contains leading model text, move it into Vehicle
+    m = SIZE_CORE_RE.search(s)
+    if m:
+        prefix = s[:m.start()].strip()
+        core = m.group(1)
+        s = core
+        if prefix:
+            v = f"{v} {prefix}".strip()
+    else:
+        # Otherwise, try to extract size from Vehicle
+        vm = SIZE_CORE_RE.search(v)
+        if vm:
+            s = vm.group(1)
+            v = (v[:vm.start()] + " " + v[vm.end():]).strip()
+
+    # Tidy Vehicle: add space between letters and digits ("ROVER90" -> "ROVER 90")
+    v = re.sub(r'(?<=[A-Za-z])(?=\d)', ' ', v)
+    v = re.sub(r'\s+', ' ', v).strip()
+
+    # Normalize size spacing ("205/70R15" -> "205/70 R15", "225/40ZR18" -> "225/40 ZR18")
+    s = normalize_size(s)
+    return pd.Series({"Vehicle": v, "Size": s})
+
+def parse_vehicle_split(vehicle_str: str):
+    """
+    Splits 'VAUXHALL GRANDLAND X' -> ('VAUXHALL', 'GRANDLAND X')
+    using the KNOWN_MAKES set populated in Stage 1.
+    """
+    v = str(vehicle_str or "").strip()
+    upper_v = v.upper()
+    
+    # longest makes first to avoid partial matches
+    sorted_makes = sorted(list(KNOWN_MAKES), key=len, reverse=True)
+    
+    best_make = "Unknown"
+    best_model = v
+
+    for make in sorted_makes:
+        if upper_v.startswith(make):
+            # found a match
+            # e.g. v="Mercedes-Benz A45", make="MERCEDES-BENZ"
+            best_make = make # stick to uppercase or title case? Let's use the text from the set.
+            # model is the rest
+            remainder = v[len(make):].strip()
+            best_model = remainder
+            break
+            
+    # normalization: Title Case for output?
+    # User example showed "Vauxhall", "Grandland X" (Title Case)
+    def to_title(s):
+        return " ".join([word.capitalize() for word in s.split()])
+
+    return to_title(best_make), to_title(best_model)
+
+def parse_size_split(size_str: str):
+    """
+    Splits '225/55 R18' or '225/55R18' -> ('225', '55', '18')
+    """
+    # Regex for standard sizes: 225/55 R18
+    # We might have letters like ZR, R, etc.
+    # Group 1: Width, Group 2: Profile, Group 3: Rim
+    match = re.search(r'(\d{2,3})[/\\](\d{2,3}(?:\.\d+)?)\s*[A-Z]*\s*(\d{2})', str(size_str).upper())
+    if match:
+        return match.group(1), match.group(2), match.group(3)
+    return None, None, None
+
+
+def process_stage4_results(results):
+    # Shape the CSV
+    rows = []
+    for segment, items in results:
+        for it in items:
+            rows.append({
+                "Segment": segment,
+                "Vehicle": it.get("Vehicle"),
+                "Size": it.get("Size"),
+                "HB1": it.get("HB1"),
+                "HB2": it.get("HB2"),
+                "HB3": it.get("HB3"),
+                "HB4": it.get("HB4"),
+                "SKUs": " ".join(it.get("SKUs", [])),
+                "success": it.get("success", False),
+            })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        logging.warning("⚠️ No results fetched in Stage 4.")
+        return None, None
+
+    # SUPPORT UP TO 24 SKUS NOW
+    SKU_COLS_24 = [f"SKU{i}" for i in range(1, 25)]
+    def explode_skus(s):
+        parts = str(s or "").split()
+        # pad to 24
+        parts = parts[:24] + [""] * max(0, 24 - len(parts))
+        return pd.Series(parts, index=SKU_COLS_24)
+
+    sku_df = df["SKUs"].apply(explode_skus)
+    
+    # We first keep everything
+    out = pd.concat([df[["Vehicle", "Size", "HB1", "HB2", "HB3", "HB4"]], sku_df], axis=1)
+
+    # Vehicle/Size repair
+    out[["Vehicle", "Size"]] = out.apply(repair_vehicle_size, axis=1)
+
+    # Replace duplicate SKUs
+    def _replace_duplicate_skus_in_row(row):
+        seen = set()
+        replaced = 0
+        for col in SKU_COLS_24:
+            val = row[col]
+            if pd.isna(val):
+                continue
+            s = str(val).strip()
+            if not s or s == "-":
+                continue
+            if s in seen:
+                row[col] = "-"   # squash duplicate to dash
+                replaced += 1
+            else:
+                seen.add(s)
+        row["_dup_replaced"] = replaced
+        return row
+
+    out = out.apply(_replace_duplicate_skus_in_row, axis=1)
+    dup_cells_replaced = int(out["_dup_replaced"].sum())
+    out = out.drop(columns=["_dup_replaced"])
+    logging.info(f"🔁 Replaced {dup_cells_replaced} duplicate SKU cells with '-'.")
+
+    # Drop rows containing 'FormatError'
+    bad_mask = out.astype(str).apply(lambda col: col.str.contains(r'FormatError', na=False)).any(axis=1)
+    dropped_bad = int(bad_mask.sum())
+    out = out[~bad_mask].copy()
+    logging.info(f"🚮 Skipping {dropped_bad} rows containing 'FormatError'.")
+
+    # De-dup on Vehicle/Size
+    DEDUP_KEY_COLUMNS = ["Vehicle", "Size"]
+    before = len(out)
+    out = out.drop_duplicates(subset=DEDUP_KEY_COLUMNS, keep="first")
+    logging.info(f"🧹 Removed {before - len(out)} duplicate rows on {DEDUP_KEY_COLUMNS}.")
+
+    # --- PREPARE DATASET 1: AIMData (Legacy) ---
+    # Needs Vehicle, Size, HB1..4, SKU1..16
+    aim_cols = ["Vehicle","Size","HB1","HB2","HB3","HB4"] + [f"SKU{i}" for i in range(1, 17)]
+    aim_df = out[aim_cols].copy()
+
+    # --- PREPARE DATASET 2: CAM_SKU (New) ---
+    # Needs Make, Model, Width, Profile, Rim, SKU1..24, last_modified
+    
+    cam_rows = []
+    timestamp = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f UTC")
+    
+    for idx, row in out.iterrows():
+        make, model = parse_vehicle_split(row["Vehicle"])
+        w, p, r = parse_size_split(row["Size"])
+        
+        # We include the original Vehicle and Size for robust SQL matching
+        new_row = {
+            "Vehicle": row["Vehicle"],
+            "Size": row["Size"],
+            "Make": make,
+            "Model": model,
+            "Width": w,
+            "Profile": p,
+            "Rim": r,
+            "last_modified": timestamp
+        }
+        for i in range(1, 25):
+            # Validation: 
+            # 1. Convert to string and strip
+            # 2. Remove potential pandas/float artifact ".0"
+            # 3. Enforce exactly 8 characters
+            val = row.get(f"SKU{i}")
+            s_val = str(val) if val is not None else ""
+            if s_val == "-" or s_val.lower() == "nan":
+                s_val = ""
+            
+            if s_val.endswith(".0"):
+                s_val = s_val[:-2]
+            
+            s_val = s_val.strip()
+
+            if len(s_val) == 8:
+                 new_row[f"SKU{i}"] = s_val
+            else:
+                 # Invalid length or empty -> NULL
+                 new_row[f"SKU{i}"] = None
+            
+        cam_rows.append(new_row)
+        
+    cam_df = pd.DataFrame(cam_rows)
+    
+    return aim_df, cam_df
+
+def run_stage_4():
+    """Executes Stage 4: Batch Runner and AIM Override SQL."""
+    logging.info(f"Starting Stage 4: Batch Runner (Mode: {AIM_RUN_MODE})...")
+    
+    # 1. Run Async Batch Runner
+    try:
+        if AIM_RUN_MODE == "GLOBAL":
+            async def _run_global():
+                # Helper to get headers
+                headers = {}
+                oidc_token = get_id_token(AIM_BASE_URL)
+                if oidc_token:
+                    headers["Authorization"] = f"Bearer {oidc_token}"
+
+                async with httpx.AsyncClient(follow_redirects=True, headers=headers) as client:
+                    await login(client)
+                    return await run_global_mode(client)
+            
+            mode, results_flat = asyncio.run(_run_global())
+            # Format results to match process_stage4_results expectation: list of (segment, items)
+            results = [(mode, results_flat)]
+        else:
+            # Legacy Per-Segment mode
+            results = asyncio.run(run_all_segments())
+    except Exception as e:
+        logging.error(f"❌ Async batch runner failed: {e}")
+        raise
+
+    # 2. Process Results
+    aim_df, cam_df = process_stage4_results(results)
+    
+    if aim_df is None:
+        logging.warning("⚠️ Skipping upload/load for Stage 4 due to empty results.")
+        return
+
+    # --- UPLOAD 1: AIMData (Standard) ---
+    try:
+        run_date = dt.datetime.utcnow().strftime("%Y%m%d")
+        run_id_for_file = TRACKER.run_id
+        aim_basename = f"results_{run_id_for_file}.csv"
+        
+        if AIM_MODE == "local":
+            local_aim_csv = os.path.join(AIM_LOCAL_ROOT, "output", aim_basename)
+        else:
+            local_aim_csv = os.path.join(tempfile.gettempdir(), aim_basename)
+            
+        aim_df.to_csv(local_aim_csv, index=False)
+        logging.info(f"✅ Wrote {len(aim_df)} rows to {local_aim_csv} (AIMData)")
+        TRACKER.update(output_file=aim_basename)
+
+        if AIM_MODE == "local":
+            logging.info("ℹ️ Local Mode: Skipping GCS/BQ upload for AIMData.")
+        else:
+            storage_client = storage.Client(project=PROJECT_ID)
+            bucket = storage_client.bucket(AIM_BUCKET_NAME)
+            aim_blob_path = f"{AIM_GCS_PREFIX}/{aim_basename}"
+            
+            if not DRY_RUN:
+                bucket.blob(aim_blob_path).upload_from_filename(local_aim_csv)
+                logging.info(f"✅ Uploaded to gs://{AIM_BUCKET_NAME}/{aim_blob_path}")
+                
+                # Load into BigQuery
+                bq_client = bigquery.Client(project=PROJECT_ID)
+                table_ref = f"{PROJECT_ID}.{AIM_DATASET_ID}.{AIM_TABLE_ID}"
+                job_config = bigquery.LoadJobConfig(
+                    source_format=bigquery.SourceFormat.CSV,
+                    skip_leading_rows=1,
+                    field_delimiter=",",
+                    write_disposition=getattr(bigquery.WriteDisposition, AIM_BQ_WRITE_DISPOSITION, bigquery.WriteDisposition.WRITE_TRUNCATE),
+                    autodetect=False,
+                    schema=[
+                        bigquery.SchemaField("Vehicle","STRING"),
+                        bigquery.SchemaField("Size","STRING"),
+                        bigquery.SchemaField("HB1","STRING"),
+                        bigquery.SchemaField("HB2","STRING"),
+                        bigquery.SchemaField("HB3","STRING"),
+                        bigquery.SchemaField("HB4","STRING"),
+                        *[bigquery.SchemaField(f"SKU{i}","STRING") for i in range(1,17)],
+                    ],
+                )
+                uri = f"gs://{AIM_BUCKET_NAME}/{aim_blob_path}"
+                load_job = bq_client.load_table_from_uri(uri, table_ref, job_config=job_config)
+                load_job.result()
+                logging.info(f"✅ Loaded into {table_ref}.")
+            else:
+                logging.info(f"🚧 DRY RUN: Would upload/load AIMData to {aim_blob_path} -> {AIM_DATASET_ID}.{AIM_TABLE_ID}")
+    except Exception as e:
+        logging.error(f"❌ Stage 4 (AIMData) failed partway: {e}")
+
+    # --- UPLOAD 2: CAM_SKU (New Upsert) ---
+    try:
+        run_date = dt.datetime.utcnow().strftime("%Y%m%d")
+        run_id_for_file = TRACKER.run_id
+        cam_basename = f"cam_sku_{run_id_for_file}.csv"
+        
+        if AIM_MODE == "local":
+            local_cam_csv = os.path.join(AIM_LOCAL_ROOT, "output", cam_basename)
+        else:
+            local_cam_csv = os.path.join(tempfile.gettempdir(), cam_basename)
+            
+        cam_df.to_csv(local_cam_csv, index=False)
+        logging.info(f"✅ Wrote {len(cam_df)} rows to {local_cam_csv} (CAM_SKU)")
+
+        if AIM_MODE == "local":
+             logging.info("ℹ️ Local Mode: Skipping GCS/BQ upload for CAM_SKU.")
+        else:
+            cam_blob_path = f"{AIM_GCS_PREFIX}/{cam_basename}"
+            cam_table_id = "bqsqltesting.CAM_files.CAM_SKU"
+            
+            if not DRY_RUN:
+                storage_client = storage.Client(project=PROJECT_ID)
+                bucket = storage_client.bucket(AIM_BUCKET_NAME)
+                bucket.blob(cam_blob_path).upload_from_filename(local_cam_csv)
+                logging.info(f"✅ Uploaded to gs://{AIM_BUCKET_NAME}/{cam_blob_path}")
+                
+                # We need a staging table for the MERGE
+                staging_table_id = f"{PROJECT_ID}.CAM_files.CAM_SKU_staging_{run_date}"
+                
+                bq_client = bigquery.Client(project=PROJECT_ID)
+                
+                # 1. Load to staging
+                job_config_cam = bigquery.LoadJobConfig(
+                    source_format=bigquery.SourceFormat.CSV,
+                    skip_leading_rows=1,
+                    autodetect=False,
+                    write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+                    schema=[
+                        bigquery.SchemaField("Vehicle", "STRING"),
+                        bigquery.SchemaField("Size", "STRING"),
+                        bigquery.SchemaField("Make", "STRING"),
+                        bigquery.SchemaField("Model", "STRING"),
+                        bigquery.SchemaField("Width", "STRING"),
+                        bigquery.SchemaField("Profile", "STRING"),
+                        bigquery.SchemaField("Rim", "STRING"),
+                        bigquery.SchemaField("last_modified", "TIMESTAMP"),
+                        *[bigquery.SchemaField(f"SKU{i}", "STRING") for i in range(1, 25)],
+                    ]
+                )
+                uri_cam = f"gs://{AIM_BUCKET_NAME}/{cam_blob_path}"
+                load_job = bq_client.load_table_from_uri(uri_cam, staging_table_id, job_config=job_config_cam)
+                load_job.result()
+                logging.info(f"✅ Loaded staging table {staging_table_id}")
+
+                # 1.5 Safety Check: Impact Analysis
+                # Count Matches vs New Rows
+                check_query = f"""
+                SELECT 
+                    COUNT(*) as total_staging,
+                    COUNTIF(T.Make IS NOT NULL) as matching_rows
+                FROM `{staging_table_id}` S
+                LEFT JOIN (
+                    SELECT Make, Model, Width, Profile, Rim 
+                    FROM `{cam_table_id}`
+                ) T
+                ON 
+                   -- Vehicle Match
+                   UPPER(TRIM(CONCAT(IFNULL(T.Make,''), ' ', IFNULL(T.Model,'')))) = UPPER(TRIM(S.Vehicle))
+                   AND
+                   -- Size Match
+                   UPPER(TRIM(CONCAT(IFNULL(T.Width,''), '/', IFNULL(T.Profile,''), ' R', IFNULL(T.Rim,'')))) = UPPER(TRIM(S.Size))
+                """
+                try:
+                    check_job = bq_client.query(check_query)
+                    row = list(check_job.result())[0]
+                    total = row['total_staging']
+                    matched = row['matching_rows']
+                    new_rows = total - matched
+                    logging.info(f"🔍 Impact Analysis: {total} staging rows. {matched} will UPDATE existing. {new_rows} will INSERT new.")
+                except Exception as e:
+                    logging.warning(f"⚠️ Could not run impact analysis (table might be empty or new): {e}")
+
+                # 2. Perform MERGE
+                # Updated: Read SQL from external file for maintainability
+                sql_file_path = "aim_cam_sku_update.sql"
+                try:
+                    with open(sql_file_path, "r") as f:
+                        merge_query_template = f.read()
+                    
+                    # Inject dynamic table names
+                    merge_query = merge_query_template.format(
+                        cam_table_id=cam_table_id,
+                        staging_table_id=staging_table_id
+                    )
+                    
+                    merge_job = bq_client.query(merge_query)
+                    merge_job.result()
+                    logging.info(f"✅ Upserted (MERGE) data into {cam_table_id}")
+                except Exception as e:
+                    logging.error(f"❌ Failed to prepare/execute MERGE query: {e}")
+                finally:
+                    # Cleanup staging?
+                    bq_client.delete_table(staging_table_id, not_found_ok=True)
+                    logging.info("🧹 Deleted staging table.")
+
+            else:
+                logging.info(f"🚧 DRY RUN: Would upload/load CAM_SKU to {cam_table_id} via MERGE.")
+    except Exception as e:
+        logging.error(f"❌ Stage 4 (CAM SKU Merge) failed partway: {e}")
+
+def run_stage_5():
+    """Executes Stage 5: Dashboard Updater (SQL)."""
+    logging.info("Starting Stage 5: Dashboard Updater...")
+    
+    bq_client = bigquery.Client(project=PROJECT_ID)
+    sql_file_path = "aim_dashboard_update.sql"
+    try:
+        with open(sql_file_path, "r") as f:
+            query = f.read()
+            
+        logging.info(f"📜 Executing SQL from {sql_file_path}...")
+        
+        if not DRY_RUN:
+            query_job = bq_client.query(query)
+            query_job.result() # Wait for the job to complete
+            logging.info("✅ Stage 5 SQL completed successfully.")
+        else:
+            logging.info("🚧 DRY RUN: Would execute Stage 5 SQL.")
+        
+    except FileNotFoundError:
+        logging.error(f"❌ SQL file not found: {sql_file_path}")
+    except Exception as e:
+        logging.error(f"❌ Failed to execute Stage 5 SQL: {e}")
+
+def run_stage_6():
+    """Executes Stage 6: Insights Updater (SQL)."""
+    logging.info("Starting Stage 6: Insights Updater...")
+    
+    bq_client = bigquery.Client(project=PROJECT_ID)
+    sql_file_path = "aim_insights_update.sql"
+    try:
+        with open(sql_file_path, "r") as f:
+            query = f.read()
+            
+        logging.info(f"📜 Executing SQL from {sql_file_path}...")
+        
+        if not DRY_RUN:
+            query_job = bq_client.query(query)
+            query_job.result() # Wait for the job to complete
+            logging.info("✅ Stage 6 SQL completed successfully.")
+        else:
+            logging.info("🚧 DRY RUN: Would execute Stage 6 SQL.")
+        
+    except FileNotFoundError:
+        logging.error(f"❌ SQL file not found: {sql_file_path}")
+    except Exception as e:
+        logging.error(f"❌ Failed to execute Stage 6 SQL: {e}")
+
+def run_stage_7():
+    """Executes Stage 7: Analysis Updater (SQL)."""
+    logging.info("Starting Stage 7: Analysis Updater...")
+    
+    bq_client = bigquery.Client(project=PROJECT_ID)
+    sql_file_path = "aim_analysis_update.sql"
+    try:
+        with open(sql_file_path, "r") as f:
+            query = f.read()
+            
+        logging.info(f"📜 Executing SQL from {sql_file_path}...")
+        
+        if not DRY_RUN:
+            query_job = bq_client.query(query)
+            query_job.result() # Wait for the job to complete
+            logging.info("✅ Stage 7 SQL completed successfully.")
+        else:
+            logging.info("🚧 DRY RUN: Would execute Stage 7 SQL.")
+        
+    except FileNotFoundError:
+        logging.error(f"❌ SQL file not found: {sql_file_path}")
+    except Exception as e:
+        logging.error(f"❌ Failed to execute Stage 7 SQL: {e}")
+
+def run_stage_8():
+    """Executes Stage 8: Merchandising Updater (SQL)."""
+    logging.info("Starting Stage 8: Merchandising Updater...")
+    
+    bq_client = bigquery.Client(project=PROJECT_ID)
+    sql_file_path = "aim_merchandising_update.sql"
+    try:
+        with open(sql_file_path, "r") as f:
+            query = f.read()
+            
+        logging.info(f"📜 Executing SQL from {sql_file_path}...")
+        
+        if not DRY_RUN:
+            query_job = bq_client.query(query)
+            query_job.result() # Wait for the job to complete
+            logging.info("✅ Stage 8 SQL completed successfully.")
+        else:
+            logging.info("🚧 DRY RUN: Would execute Stage 8 SQL.")
+        
+    except FileNotFoundError:
+        logging.error(f"❌ SQL file not found: {sql_file_path}")
+    except Exception as e:
+        logging.error(f"❌ Failed to execute Stage 8 SQL: {e}")
+
+def run_stage_9():
+    """Executes Stage 9: Size File Updater (SQL)."""
+    logging.info("Starting Stage 9: Size File Updater...")
+    
+    bq_client = bigquery.Client(project=PROJECT_ID)
+    sql_file_path = "aim_size_file_update.sql"
+    try:
+        with open(sql_file_path, "r") as f:
+            query = f.read()
+            
+        logging.info(f"📜 Executing SQL from {sql_file_path}...")
+        
+        if not DRY_RUN:
+            query_job = bq_client.query(query)
+            query_job.result() # Wait for the job to complete
+            logging.info("✅ Stage 9 SQL completed successfully.")
+        else:
+            logging.info("🚧 DRY RUN: Would execute Stage 9 SQL.")
+        
+    except FileNotFoundError:
+        logging.error(f"❌ SQL file not found: {sql_file_path}")
+    except Exception as e:
+        logging.error(f"❌ Failed to execute Stage 9 SQL: {e}")
+
+if __name__ == "__main__":
+    stages = [
+        ("Stage 1", run_stage_1),
+        ("Stage 3", run_stage_3),
+        ("Stage 4", run_stage_4),
+        ("Stage 5", run_stage_5),
+        ("Stage 6", run_stage_6),
+        ("Stage 7", run_stage_7),
+        ("Stage 8", run_stage_8),
+        ("Stage 9", run_stage_9),
+    ]
+
+    for name, func in stages:
+        # In Local Mode, we only care about Stage 4 for the Push Batch demo
+        if AIM_MODE == "local" and name != "Stage 4":
+            logging.info(f"⏭ Skip {name} in Local Mode.")
+            continue
+            
+        try:
+            logging.info(f"🚀 Starting {name}...")
+            func()
+            logging.info(f"✅ {name} completed.")
+        except Exception as e:
+            logging.error(f"❌ {name} failed: {e}")
+            logging.info(f"🛑 CRITICAL FAILURE. Stopping process.")
+            import sys
+            sys.exit(1)

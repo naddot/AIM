@@ -11,20 +11,32 @@ export const saveConfigurationAndRun = async (params: NotebookParams): Promise<N
 
   try {
     // Construct Payload
-    const limitSegmentsArray = params.LIMIT_TO_SEGMENTS
-      ? params.LIMIT_TO_SEGMENTS.split(',').map(s => s.trim()).filter(s => s.length > 0)
-      : [];
-
-    const jsonPayload = {
-      TOTAL_PER_SEGMENT: Number(params.TOTAL_PER_SEGMENT),
+    // Construct Payload
+    // Base payload with common fields
+    const commonPayload = {
+      RUN_MODE: String(params.RUN_MODE),
       GOLDILOCKS_ZONE_PCT: Number(params.GOLDILOCKS_ZONE_PCT),
       PRICE_FLUCTUATION_UPPER: Number(params.PRICE_FLUCTUATION_UPPER),
       PRICE_FLUCTUATION_LOWER: Number(params.PRICE_FLUCTUATION_LOWER),
       BRAND_ENHANCER: String(params.BRAND_ENHANCER || ""),
       MODEL_ENHANCER: String(params.MODEL_ENHANCER || ""),
       SEASON: String(params.SEASON || ""),
-      LIMIT_TO_SEGMENTS: limitSegmentsArray
+      LIMIT_TO_SEGMENTS: params.LIMIT_TO_SEGMENTS
+        ? params.LIMIT_TO_SEGMENTS.split(',').map(s => s.trim()).filter(s => s.length > 0)
+        : []
     };
+
+    let jsonPayload: any = { ...commonPayload };
+
+    if (String(params.RUN_MODE) === "GLOBAL") {
+      jsonPayload.TOTAL_OVERALL = Number(params.TOTAL_OVERALL);
+      jsonPayload.BATCH_SIZE = Number(params.BATCH_SIZE);
+      // Exclude TOTAL_PER_SEGMENT
+    } else {
+      // PER_SEGMENT
+      jsonPayload.TOTAL_PER_SEGMENT = Number(params.TOTAL_PER_SEGMENT);
+      // Exclude TOTAL_OVERALL and BATCH_SIZE
+    }
 
     console.log("🌍 Origin:", window.location.origin);
     console.log("📦 Payload:", JSON.stringify(jsonPayload, null, 2));

@@ -24,13 +24,16 @@ if (-not $PROJECT_ID) {
 }
 
 $REGION = "europe-west2" # Default region
-$IMAGE_NAME = "aim-growth-job"
-$JOB_NAME = "aim-growth-job"
+$IMAGE_NAME = "aim-runner"
+$JOB_NAME = "aim-runner"
 $IMAGE_URI = "gcr.io/$PROJECT_ID/$IMAGE_NAME"
+
+$SA_EMAIL = "aim-cloud-sa@$PROJECT_ID.iam.gserviceaccount.com"
 
 Write-Host "Project ID: $PROJECT_ID" -ForegroundColor Yellow
 Write-Host "Region:     $REGION" -ForegroundColor Yellow
 Write-Host "Image URI:  $IMAGE_URI" -ForegroundColor Yellow
+Write-Host "Service Account: $SA_EMAIL" -ForegroundColor Yellow
 
 # 2. Build and Push Image
 Write-Host "`nBuilding and Pushing Docker Image..." -ForegroundColor Cyan
@@ -43,6 +46,7 @@ if ($LASTEXITCODE -ne 0) {
 # 3. Construct Env Vars String for Deployment
 # We exclude DRY_RUN from the loop because we want to force it to False
 $EnvVarString = "DRY_RUN=False" 
+$EnvVarString += ",AIM_PRIORITY_RUNLIST_GCS_URI=gs://aim-home/aim-priority-runlist/AIM rankings priority_runlist_current.csv" 
 
 foreach ($key in $EnvVars.Keys) {
     if ($key -ne "DRY_RUN") {
@@ -56,7 +60,6 @@ Write-Host "`nDeploying Cloud Run Job: $JOB_NAME..." -ForegroundColor Cyan
 
 # Check if job exists to decide between create or update (though deploy/update handles both usually, 'deploy' isn't a command for jobs, 'update' or 'create' is)
 # Actually 'gcloud run jobs deploy' allows creating/updating in one go in newer versions, but 'update' is safer if it exists, 'create' if not.
-# Let's use 'replace' logic or just try create and if it exists, update.
 # Simplest is `gcloud run jobs update` if it exists, or `create` if not.
 # But `gcloud run jobs deploy` is the declarative command. Let's use `update` and fall back to `create` or just `create --overwrite`?
 # `gcloud run jobs deploy` is NOT a standard command. It is `gcloud run jobs create` or `gcloud run jobs update`.
@@ -68,6 +71,7 @@ gcloud run jobs update $JOB_NAME `
     --region $REGION `
     --set-env-vars $EnvVarString `
     --project $PROJECT_ID `
+    --service-account $SA_EMAIL `
     --tasks 1 `
     --max-retries 0 `
     --quiet
@@ -79,6 +83,7 @@ if ($LASTEXITCODE -ne 0) {
         --region $REGION `
         --set-env-vars $EnvVarString `
         --project $PROJECT_ID `
+        --service-account $SA_EMAIL `
         --tasks 1 `
         --max-retries 0 `
         --quiet

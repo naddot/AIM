@@ -7,7 +7,8 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import { Storage } from "@google-cloud/storage";
-import { getActiveExecution, triggerJob } from "./services/cloudRunJobs.js"; // Note: .js extension for ES modules if needed, or tsx handles resolution
+import { getActiveExecution, triggerJob } from "./services/cloudRunJobs.js";
+import { spawn } from "child_process";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,11 +21,18 @@ const PORT = process.env.PORT || 8080;
 // This server acts as the Frontend Host and API Gateway.
 // ----------------------------------------------------------------------
 
+// Local Mode Configuration
+const AIM_MODE = (process.env.AIM_MODE || "cloud").toLowerCase();
+const AIM_LOCAL_ROOT = process.env.AIM_LOCAL_ROOT || "./demo";
+const AIM_JOB_CMD = process.env.AIM_JOB_CMD || "python aim-job/main.py";
+const AIM_JOB_CWD = process.env.AIM_JOB_CWD || ".";
+const AIM_WAVES_URL = process.env.AIM_WAVES_URL || "http://localhost:5000";
+
 console.log("\n================================================");
 console.log("🚀 SERVER STARTING");
 console.log(`📅 Timestamp: ${new Date().toISOString()}`);
 console.log(`📂 Working Dir: ${process.cwd()}`);
-console.log(`🌍 Env Check: PROJECT_ID=${process.env.PROJECT_ID}, REGION=${process.env.REGION}, JOB_NAME=${process.env.JOB_NAME}`);
+console.log(`🌍 Env Check: MODE=${AIM_MODE}, LOCAL_ROOT=${AIM_LOCAL_ROOT}, WAVES_URL=${AIM_WAVES_URL}`);
 console.log("================================================\n");
 
 // Middleware
@@ -37,9 +45,27 @@ app.use((req, res, next) => {
   next();
 });
 
-// Configuration
 const CONFIG_SERVICE_URL = "https://update-aim-config-829092209663.europe-west1.run.app";
 const SECRET_NAME = "projects/829092209663/secrets/AIM-config-growth-update/versions/latest";
+
+// Helper for robust JSON reading (handles transient file locks on Windows)
+function readJsonFileSyncWithRetry(filePath: string, retries = 3): any {
+  let lastErr: any;
+  for (let i = 0; i < retries; i++) {
+    try {
+      const content = fs.readFileSync(filePath, "utf-8");
+      if (!content.trim()) return null;
+      return JSON.parse(content);
+    } catch (err: any) {
+      lastErr = err;
+      if (i < retries - 1) {
+        const start = Date.now();
+        while (Date.now() - start < 100) { /* sync sleep */ }
+      }
+    }
+  }
+  throw lastErr;
+}
 
 // ----------------------------------------------------------------------
 // API Routes
@@ -53,21 +79,53 @@ app.get("/api/health", (req, res) => {
 app.get("/api/job-status", async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   try {
+    if (AIM_MODE === "local") {
+      const statusPath = path.join(AIM_LOCAL_ROOT, "output", "job_status.json");
+      if (fs.existsSync(statusPath)) {
+        try {
+          const statusData = readJsonFileSyncWithRetry(statusPath);
+          if (!statusData) return res.json({ state: "idle", last_log_line: "Status file empty." });
+          return res.json(statusData);
+        } catch (parseErr: any) {
+          console.error(`❌ Local status parse error: ${parseErr.message}`);
+          return res.status(500).json({ error: "Failed to parse local job status", details: parseErr.message });
+        }
+      } else {
+        return res.json({ state: "idle", last_log_line: "No status file found." });
+      }
+    }
+
     const since = req.query.since as string | undefined;
     const status = await getActiveExecution(since);
     res.json(status);
   } catch (err: any) {
     console.error("[/api/job-status] ERROR:", err?.stack || err);
-    // Don't just return 500, try to return a meaningful error that the UI can withstand
     res.status(500).json({ error: "Job status check failed", details: err?.message || String(err) });
   }
 });
 
-// Fetch Current Config from GCS
+// Fetch Current Config
 app.get("/api/current-config", async (req, res) => {
-  console.log(`\n[${new Date().toISOString()}] 📥 Fetching Current Configuration from GCS`);
+  console.log(`\n[${new Date().toISOString()}] 📥 Fetching Current Configuration`);
 
   try {
+    if (AIM_MODE === "local") {
+      const configPath = path.join(AIM_LOCAL_ROOT, "config", "aim-config.json");
+      console.log(`Loading local config: ${configPath}`);
+      if (fs.existsSync(configPath)) {
+        try {
+          const config = readJsonFileSyncWithRetry(configPath);
+          if (!config) throw new Error("Config file is empty");
+          return res.json(config);
+        } catch (parseErr: any) {
+          console.error(`❌ Local config parse error: ${parseErr.message}`);
+          return res.status(500).json({ error: "Failed to parse local config", details: parseErr.message });
+        }
+      } else {
+        return res.status(404).json({ error: "Local config file not found", path: configPath });
+      }
+    }
+
     const gcsUri = process.env.CONFIG_GCS_URI || "gs://aim-home/aim-config-files/aim-config.json";
     console.log(`Target GCS URI: ${gcsUri}`);
 
@@ -113,9 +171,50 @@ app.get("/api/current-config", async (req, res) => {
 
 // Trigger Cloud Run Job
 app.post("/api/trigger-job", async (req, res) => {
-  console.log(`\n[${new Date().toISOString()}] 🚀 Triggering Cloud Run Job`);
+  console.log(`\n[${new Date().toISOString()}] 🚀 Triggering Job`);
 
   try {
+    if (AIM_MODE === "local") {
+      console.log(`Subprocess Spawn: ${AIM_JOB_CMD} in ${AIM_JOB_CWD}`);
+
+      // Split command and args
+      const [cmd, ...args] = AIM_JOB_CMD.split(" ");
+      // Ensure --stage 4 --run-mode GLOBAL are added if not present
+      const fullArgs = [...args];
+      if (!fullArgs.includes("--stage")) fullArgs.push("--stage", "4");
+      if (!fullArgs.includes("--run-mode")) fullArgs.push("--run-mode", "GLOBAL");
+
+      // Ensure logs directory exists
+      const logDir = path.join(AIM_LOCAL_ROOT, "logs");
+      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+      const logStream = fs.createWriteStream(path.join(logDir, "job.log"), { flags: "a" });
+
+      // Spawn detached and fire-and-forget
+      const subprocess = spawn(cmd, fullArgs, {
+        cwd: path.resolve(AIM_JOB_CWD),
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          AIM_MODE: "local",
+          AIM_LOCAL_ROOT: path.resolve(AIM_LOCAL_ROOT),
+          AIM_WAVES_URL: AIM_WAVES_URL
+        }
+      });
+
+      // Pipe subprocess output to the log file
+      subprocess.stdout?.pipe(logStream);
+      subprocess.stderr?.pipe(logStream);
+
+      subprocess.unref();
+
+      return res.json({
+        success: true,
+        message: "Local job triggered (subprocess)",
+        job: "local-subprocess"
+      });
+    }
+
     const result = await triggerJob();
     console.log(`✅ Job triggered successfully. Operation: ${result.operation}`);
 
@@ -147,6 +246,13 @@ app.post("/api/save-config", async (req, res) => {
 
   try {
     const payload = req.body || {};
+
+    if (AIM_MODE === "local") {
+      const configPath = path.join(AIM_LOCAL_ROOT, "config", "aim-config.json");
+      console.log(`Saving local config: ${configPath}`);
+      fs.writeFileSync(configPath, JSON.stringify(payload, null, 2));
+      return res.status(200).json({ success: true, message: "Local config saved" });
+    }
 
     // 1. Get Credentials from Secret Manager
     console.log("🔐 Fetching credentials from Secret Manager...");

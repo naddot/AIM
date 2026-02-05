@@ -5,8 +5,16 @@ export enum Season {
   None = ""
 }
 
+export enum RunMode {
+  PerSegment = "PER_SEGMENT",
+  Global = "GLOBAL"
+}
+
 export interface NotebookParams {
+  RUN_MODE: RunMode;
   TOTAL_PER_SEGMENT: number;
+  TOTAL_OVERALL: number;
+  BATCH_SIZE: number;
   GOLDILOCKS_ZONE_PCT: number;
   PRICE_FLUCTUATION_UPPER: number;
   PRICE_FLUCTUATION_LOWER: number;

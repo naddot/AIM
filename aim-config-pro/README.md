@@ -1,20 +1,44 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# AIM-Config-Pro: Management Dashboard
 
-# Run and deploy your AI Studio app
+AIM-Config-Pro is the primary interface for managing and monitoring the AIM Growth Job. It provides tools for configuration management, job triggering, and real-time status visibility.
 
-This contains everything you need to run your app locally.
+## 🚀 Features
 
-View your app in AI Studio: https://ai.studio/apps/drive/1dGtx-h-guFPYOIFolkM6lKdxbDB0Ha1_
+- **Dynamic Configuration**: Adjust `TOTAL_OVERALL`, `BATCH_SIZE`, and ranking parameters via a sleek UI.
+- **Run Mode Selector**: Switch between `Global Priority` and `Per-Segment` modes instantly.
+- **One-Click Triggering**: Manually launch the Growth Job as a Cloud Run Job (production) or local subprocess (demo).
+- **Status Dashboard**: Monitoring of job states (Idle, Running, Success, Failed) with real-time heartbeat and progress tracking.
 
-## Run Locally
+## 🏗 Component Roles
 
-**Prerequisites:**  Node.js
+- **Frontend (Vite/React)**: The presentation layer for configuration and monitoring.
+- **API Server (Node/Express)**:
+    - **Cloud Mode**: Interfaces with Google Cloud Storage and Cloud Run Jobs API.
+    - **Local Mode**: Interfaces with the local `./demo` directory for file-based configuration and state management.
 
+## ⚙️ Development & Local Run
 
+### Prerequisites
+- Node.js (v18+)
+- npm
+
+### Running Locally
 1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+   ```bash
+   npm install
+   ```
+2. Start the development stack:
+   ```bash
+   npm run dev
+   ```
+   *Note: This starts both the Vite frontend (Port 5173) and the API proxy server (Port 8081).*
+
+## 🔌 API Gateway Endpoints
+
+- `GET /api/job-status`: Returns the authoritative state and progress.
+- `GET /api/current-config`: Fetches the current configuration from GCS or local file.
+- `POST /api/save-config`: Persists updated parameters.
+- `POST /api/trigger-job`: Spawns the Job execution.
+
+---
+*The control center for Autonomous Inventory Management.*
