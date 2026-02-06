@@ -32,19 +32,23 @@ A rigorous verification process was used to ensure zero regression.
     - Ran the *new* modular code in the exact same mocked environment.
     - The new code *natively* generates `run_manifest.json` via `StatusTracker`.
 3.  **Comparison** (`verify_refactor.py`):
+    - Uses **hand-written mocks** (via `unittest.mock`) to simulate Network (Waves API) and BigQuery interactions, ensuring deterministic runs without external dependencies.
     - Compared Manifests: Confirmed Stage execution order and logical flow match.
     - Compared Status: Confirmed schema integrity.
     - **Result**: `VERIFICATION SUCCESSFUL`.
-        - *Note*: One improvement detected: Status state now correctly updates to `success` (Legacy stuck at `idle`).
+        - **Behavior Change**: The Status Tracker now correctly reports `success` on completion. The legacy code left the status as `idle` (a known bug explicitly fixed in this refactor).
 
 ### Key Improvements
 -   **Dependency Injection**: No more global state. Components receive explicit dependencies.
+-   **Testability**: Stages and clients can now be unit-tested independently using mocked Context and IO backends.
 -   **IO Abstraction**: Local/Cloud logic is handled by the backend, not `if/else` sprawl.
 -   **Manifest Verification**: The code now self-reports its execution path (stages run, SQL files executed with hashes), enabling drift detection.
--   **Safety**: Imports are improved (package structure), and retry policies are explicit.
+-   **Safety**: Imports are improved, and retry policies are explicit.
 
 ## Usage
-The entry point remains the same:
+The refactor is **backwards compatible** at the CLI and environment-variable level. Ops workflows do not need to change.
+
+The entry point remains:
 ```bash
 python aim-job/main.py
 ```
