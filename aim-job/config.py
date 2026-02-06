@@ -24,7 +24,7 @@ class AimConfig:
     aim_bucket_name: str = os.getenv("AIM_BUCKET_NAME", "aim-home")
     aim_gcs_prefix: str = os.getenv("AIM_GCS_PREFIX", "aim-daily-files")
     config_gcs_uri: Optional[str] = os.getenv("CONFIG_GCS_URI")
-    priority_runlist_gcs_uri: str = os.getenv("AIM_PRIORITY_RUNLIST_GCS_URI", "gs://aim-home/aim-priority-runlist/priority_runlist_current.csv")
+    priority_runlist_gcs_uri: str = os.getenv("AIM_PRIORITY_RUNLIST_GCS_URI", "gs://aim-home/aim-priority-runlist/AIM rankings priority_runlist_current.csv")
     ignore_gcs_config: bool = os.getenv("IGNORE_GCS_CONFIG", "False").lower() in ("true", "1", "t")
 
     # BigQuery

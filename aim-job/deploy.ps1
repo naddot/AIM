@@ -46,7 +46,6 @@ if ($LASTEXITCODE -ne 0) {
 # 3. Construct Env Vars String for Deployment
 # We exclude DRY_RUN from the loop because we want to force it to False
 $EnvVarString = "DRY_RUN=False" 
-$EnvVarString += ",AIM_PRIORITY_RUNLIST_GCS_URI=gs://aim-home/aim-priority-runlist/AIM rankings priority_runlist_current.csv" 
 
 foreach ($key in $EnvVars.Keys) {
     if ($key -ne "DRY_RUN") {
@@ -69,7 +68,7 @@ Write-Host "Attempting to update existing job..."
 gcloud run jobs update $JOB_NAME `
     --image $IMAGE_URI `
     --region $REGION `
-    --set-env-vars $EnvVarString `
+    --set-env-vars "$EnvVarString" `
     --project $PROJECT_ID `
     --service-account $SA_EMAIL `
     --tasks 1 `
@@ -81,7 +80,7 @@ if ($LASTEXITCODE -ne 0) {
     gcloud run jobs create $JOB_NAME `
         --image $IMAGE_URI `
         --region $REGION `
-        --set-env-vars $EnvVarString `
+        --set-env-vars "$EnvVarString" `
         --project $PROJECT_ID `
         --service-account $SA_EMAIL `
         --tasks 1 `
