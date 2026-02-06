@@ -1,0 +1,15 @@
+{
+  "state": "idle",
+  "run_id": "20260206_084556_6a88",
+  "started_at": null,
+  "ended_at": null,
+  "heartbeat_ts": "2026-02-06T08:45:56.439287",
+  "last_log_line": "Initialized",
+  "output_file": "results_20260206_084556_6a88.csv",
+  "error_summary": null,
+  "progress": {
+    "attempted": 0,
+    "succeeded": 0,
+    "failed": 0
+  }
+}
