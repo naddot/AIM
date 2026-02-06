@@ -127,10 +127,26 @@ async def run_global_mode(ctx: Context, client):
 
          # Progress
          processed = min((i + 1) * ctx.config.batch_size, total_cams)
+         succeeded = sum(1 for r in all_results[:processed] if r and r.get("success"))
+         failed = sum(1 for r in all_results[:processed] if r and not r.get("success"))
+         
+         if failed > 0:
+             # Log first few errors to help debugging
+             start_fail_chk = i * ctx.config.batch_size
+             end_fail_chk = min((i + 1) * ctx.config.batch_size, total_cams)
+             errors_logged = 0
+             for k in range(start_fail_chk, end_fail_chk):
+                 res = all_results[k]
+                 if res and not res.get("success"):
+                     err = res.get("error_code") or res.get("error_type") or "Unknown Error"
+                     logging.warning(f"   ⚠️ Item {k} ({res.get('Vehicle', '?')}/{res.get('Size', '?')}) failed: {err}")
+                     errors_logged += 1
+                     if errors_logged >= 3: break # Don't spam
+         
          ctx.tracker.update(progress={
              "attempted": processed,
-             "succeeded": sum(1 for r in all_results[:processed] if r and r.get("success")),
-             "failed": sum(1 for r in all_results[:processed] if r and not r.get("success"))
+             "succeeded": succeeded,
+             "failed": failed
          })
 
     # Retry Logic (1 pass)

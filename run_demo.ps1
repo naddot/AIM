@@ -32,17 +32,24 @@ foreach ($Port in $DemoPorts) {
         }
     }
 }
+Write-Host "   - Waiting for ports to free..." -ForegroundColor Gray
+Start-Sleep -Seconds 3
 
 # 3. Waves Backend (Port 5000)
 Write-Host "`n🚀 Starting Waves Backend..." -ForegroundColor Cyan
 $WavesCmd = "`$host.UI.RawUI.WindowTitle = 'AIM Local: Waves Backend (5000)'; `$env:FLASK_APP='aim_waves.main:create_app'; `$env:APP_ACCESS_PASSWORD='test'; cd '$RootPath/AIM-Waves'; python -m flask run --port 5000"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $WavesCmd
+Start-Sleep -Seconds 2
 
 # 4. Config Pro API Server (Port 8081)
 Write-Host "🚀 Starting Config Pro API Server..." -ForegroundColor Cyan
 # Passing ABSOLUTE paths to ensure server.ts can find the demo folder
-$BackendCmd = "`$host.UI.RawUI.WindowTitle = 'AIM Local: Config Pro API (8081)'; `$env:AIM_MODE='local'; `$env:AIM_LOCAL_ROOT='$DemoPath'; `$env:AIM_WAVES_URL='http://localhost:5000'; `$env:AIM_SERVICE_PASSWORD='test'; `$env:AIM_JOB_CMD='python aim-job/main.py'; `$env:AIM_JOB_CWD='$RootPath'; `$env:PORT='8081'; cd '$RootPath/aim-config-pro'; npm run server"
+# Using 'npx tsx server.ts' directly to avoid npm script issues and ensure visible output
+$BackendCmd = "`$host.UI.RawUI.WindowTitle = 'AIM Local: Config Pro API (8081)'; `$env:AIM_MODE='local'; `$env:AIM_LOCAL_ROOT='$DemoPath'; `$env:AIM_WAVES_URL='http://localhost:5000'; `$env:AIM_SERVICE_PASSWORD='test'; `$env:AIM_JOB_CMD='python aim-job/main.py'; `$env:AIM_JOB_CWD='$RootPath'; `$env:PORT='8081'; cd '$RootPath/aim-config-pro'; npx tsx server.ts"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $BackendCmd
+
+Write-Host "⏳ Waiting 10s for API Server to initialize..." -ForegroundColor Yellow
+Start-Sleep -Seconds 10
 
 # 5. Config Pro Vite Frontend (Port 5173)
 Write-Host "🚀 Starting Config Pro Frontend..." -ForegroundColor Cyan

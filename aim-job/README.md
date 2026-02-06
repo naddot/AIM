@@ -16,7 +16,8 @@ The Growth Job is the central orchestrator responsible for executing the invento
 ## 🛠 Features
 
 - **Smart Batching**: Chunks large runlists into `BATCH_SIZE` requests for Waves.
-- **Robust Retries**: Attempts to recover failed CAMs in a specialized retry pass with exponential backoff.
+- **Rich Recommendations**: Supports up to 24 suggestion slots (4 Hotboxes + 20 List items) with strict order preservation.
+- **Robust Retries**: Attempts to recover failed CAMs in a specialized retry pass with internal formatting glitch protection.
 - **Audit Manifests**: Writes detailed `run_id` audit logs including uri, row counts, and error breakdowns.
 - **Local Mode Interop**: Detects `AIM_MODE=local` to swap Cloud services (GCS, BigQuery) for local directory I/O.
 

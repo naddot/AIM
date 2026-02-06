@@ -1,0 +1,64 @@
+{
+  "mode": "local",
+  "dry_run": true,
+  "stages": [],
+  "sql_files": [],
+  "http_requests": [
+    {
+      "method": "POST",
+      "url": "https://aim-engine-829092209663.europe-west1.run.app/login"
+    },
+    {
+      "method": "GET",
+      "url": "https://aim-engine-829092209663.europe-west1.run.app/app"
+    },
+    {
+      "method": "GET",
+      "url": "https://aim-engine-829092209663.europe-west1.run.app/api/recommendations"
+    },
+    {
+      "method": "GET",
+      "url": "https://aim-engine-829092209663.europe-west1.run.app/api/recommendations"
+    },
+    {
+      "method": "GET",
+      "url": "https://aim-engine-829092209663.europe-west1.run.app/api/recommendations"
+    },
+    {
+      "method": "GET",
+      "url": "https://aim-engine-829092209663.europe-west1.run.app/api/recommendations"
+    },
+    {
+      "method": "GET",
+      "url": "https://aim-engine-829092209663.europe-west1.run.app/api/recommendations"
+    },
+    {
+      "method": "GET",
+      "url": "https://aim-engine-829092209663.europe-west1.run.app/api/recommendations"
+    },
+    {
+      "method": "GET",
+      "url": "https://aim-engine-829092209663.europe-west1.run.app/api/recommendations"
+    },
+    {
+      "method": "GET",
+      "url": "https://aim-engine-829092209663.europe-west1.run.app/api/recommendations"
+    },
+    {
+      "method": "GET",
+      "url": "https://aim-engine-829092209663.europe-west1.run.app/api/recommendations"
+    },
+    {
+      "method": "GET",
+      "url": "https://aim-engine-829092209663.europe-west1.run.app/api/recommendations"
+    },
+    {
+      "method": "GET",
+      "url": "https://aim-engine-829092209663.europe-west1.run.app/api/recommendations"
+    },
+    {
+      "method": "GET",
+      "url": "https://aim-engine-829092209663.europe-west1.run.app/api/recommendations"
+    }
+  ]
+}

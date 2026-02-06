@@ -58,7 +58,34 @@ def load_priority_runlist(config: AimConfig, io_impl: IOBackend) -> pd.DataFrame
         if not content:
             return None
             
-        return pd.read_csv(StringIO(content))
+        df = pd.read_csv(StringIO(content))
+        
+        # Normalize Columns
+        # 1. Strip whitespace from headers
+        df.columns = df.columns.str.strip()
+        
+        # 2. Case-insensitive mapping to canonical names
+        # We expect: Vehicle, Size, PriorityRank (or Rank)
+        col_map = {c: c.lower() for c in df.columns}
+        reverse_map = {}
+        for orig, lower in col_map.items():
+            if lower == "vehicle": reverse_map[orig] = "Vehicle"
+            elif lower == "size": reverse_map[orig] = "Size"
+            elif lower in ["priorityrank", "rank"]: reverse_map[orig] = "PriorityRank"
+            
+        df.rename(columns=reverse_map, inplace=True)
+        
+        # 3. Validate and Clean
+        required = ["Vehicle", "Size"]
+        if not all(col in df.columns for col in required):
+            logging.error(f"❌ Runlist missing required columns {required}. Found: {df.columns.tolist()}")
+            return None
+            
+        # Drop invalid rows
+        df = df[~df["Vehicle"].str.lower().isin(["nan", "", "none"])]
+        df = df[~df["Size"].str.lower().isin(["nan", "", "none"])]
+        
+        return df
 
     except Exception as e:
         logging.error(f"❌ Failed to load runlist: {e}")

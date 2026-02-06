@@ -6,6 +6,7 @@ AIM-Config-Pro is the primary interface for managing and monitoring the AIM Grow
 
 - **Dynamic Configuration**: Adjust `TOTAL_OVERALL`, `BATCH_SIZE`, and ranking parameters via a sleek UI.
 - **Run Mode Selector**: Switch between `Global Priority` and `Per-Segment` modes instantly.
+- **Improved Stability**: Native `tsx` server execution and hardened initialization wait times (10s) for reliable local demo startup.
 - **One-Click Triggering**: Manually launch the Growth Job as a Cloud Run Job (production) or local subprocess (demo).
 - **Status Dashboard**: Monitoring of job states (Idle, Running, Success, Failed) with real-time heartbeat and progress tracking.
 
