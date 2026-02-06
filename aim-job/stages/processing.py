@@ -84,7 +84,7 @@ def process_stage4_results(results, known_makes: set):
     cam_rows = []
     # Force UTC aware for production/correctness
     # But main.py legacy used: dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f UTC")
-    timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f UTC")
+    timestamp = dt.datetime.now(dt.timezone.utc).isoformat()
     
     for idx, row in out.iterrows():
         make, model = parse_vehicle_split(row["Vehicle"], known_makes)

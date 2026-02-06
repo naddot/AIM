@@ -47,13 +47,8 @@ def load_priority_runlist(config: AimConfig, io_impl: IOBackend) -> pd.DataFrame
              bucket = parts[0]
              blob_name = parts[1]
              
-             # Check if our backend matches this bucket
-             if isinstance(io_impl, GCSBackend) and io_impl.bucket_name == bucket:
-                 # We can try to assume it's reachable, but GCSBackend adds root_prefix.
-                 # Runlist might be in a different folder.
-                 return _load_df_raw_gcs(config.project_id, bucket, blob_name)
-             else:
-                 return _load_df_raw_gcs(config.project_id, bucket, blob_name)
+             # Instead of returning immediately, we get the text content
+             content = _get_raw_text_gcs(config.project_id, bucket, blob_name)
 
         if not content:
             return None
@@ -91,9 +86,8 @@ def load_priority_runlist(config: AimConfig, io_impl: IOBackend) -> pd.DataFrame
         logging.error(f"❌ Failed to load runlist: {e}")
         return None
 
-def _load_df_raw_gcs(project_id, bucket_name, blob_name):
+def _get_raw_text_gcs(project_id, bucket_name, blob_name):
      client = storage.Client(project=project_id)
      bucket = client.bucket(bucket_name)
      blob = bucket.blob(blob_name)
-     txt = blob.download_as_text()
-     return pd.read_csv(StringIO(txt))
+     return blob.download_as_text()

@@ -4,5 +4,5 @@ import logging
 
 def run(ctx: Context):
     logging.info("Starting Stage 5: Validation Tables...")
-    run_sql_query(ctx, "validation_tables.sql", "Validation Tables")
+    run_sql_query(ctx, "aim_size_file_update.sql", "Validation Tables")
     logging.info("✅ Stage 5 completed.")

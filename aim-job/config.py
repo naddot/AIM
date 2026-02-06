@@ -30,6 +30,7 @@ class AimConfig:
     # BigQuery
     aim_dataset_id: str = os.getenv("AIM_DATASET_ID", "AIM")
     aim_table_id: str = os.getenv("AIM_TABLE_ID", "AIMData")
+    cam_table_id: str = os.getenv("CAM_TABLE_ID", "bqsqltesting.CAM_files.CAM_SKU")
     bq_write_disposition: str = os.getenv("AIM_BQ_WRITE_DISPOSITION", "WRITE_TRUNCATE")
 
     # AIM Service

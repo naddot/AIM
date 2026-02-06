@@ -23,3 +23,11 @@ test.json
 demo/logs/
 demo/output/
 demo/config/
+
+# Local Logs
+*logs.json
+*logs*.json
+*.log
+engine_desc.json
+job_desc.json
+

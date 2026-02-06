@@ -50,7 +50,8 @@ $EnvVarString = "DRY_RUN=False"
 foreach ($key in $EnvVars.Keys) {
     if ($key -ne "DRY_RUN") {
         $val = $EnvVars[$key]
-        $EnvVarString += ",$key=$val"
+        # Quote values to handle spaces (using escaped quotes for the gcloud command)
+        $EnvVarString += ",$key=`"$val`""
     }
 }
 

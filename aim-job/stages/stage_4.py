@@ -3,6 +3,7 @@ import logging
 import math
 import os
 import tempfile
+import json
 import pandas as pd
 import datetime as dt
 from google.cloud import bigquery
@@ -238,26 +239,87 @@ def write_aim_data(ctx: Context, df):
 
 
 def write_cam_sku(ctx: Context, df):
-    # Similar logic for CAM_SKU upsert (Merge)
+    # Upload CAM_SKU to staging and Merge
     run_id = ctx.tracker.run_id
     basename = f"cam_sku_{run_id}.csv"
     path = f"output/{basename}"
     ctx.io.write_text(path, df.to_csv(index=False))
-    
+    logging.info(f"✅ Wrote CAM_SKU CSV to {path}")
+
     if ctx.config.aim_mode == "local":
         return
 
-    object_name = ctx.io.resolve_path(path)
-    uri = f"gs://{ctx.config.aim_bucket_name}/{object_name}"
+    # Cloud Mode: BQ Merge
+    table_id = ctx.config.cam_table_id # Original was 'bqsqltesting.CAM_files.CAM_SKU'
+    staging_id = f"{table_id}_staging_{run_id}"
     
-    # BQ Merge Logic...
-    # (Simplified for brevity, but essentially same SQL MERGE logic as main.py)
-    # staging table load -> Merge -> Drop Staging
-    pass # Implementation would follow main.py pattern
+    from bq import load_table_from_dataframe, execute_query
+    
+    # 1. Load Staging Table
+    j_conf = bigquery.LoadJobConfig(
+        write_disposition="WRITE_TRUNCATE",
+        autodetect=True
+    )
+    load_table_from_dataframe(ctx.bq, df, staging_id, j_conf, ctx.config.dry_run)
+    
+    # 2. Execute Merge
+    try:
+        with open("aim_cam_sku_update.sql", "r", encoding="utf-8") as f:
+            template = f.read()
+        
+        sql = template.format(
+            cam_table_id=table_id,
+            staging_table_id=staging_id
+        )
+        execute_query(ctx.bq, sql, ctx.config.dry_run)
+        
+    except Exception as e:
+        logging.error(f"❌ Merge failed: {e}")
+        raise
+    finally:
+        # 3. Cleanup Staging
+        if not ctx.config.dry_run:
+            ctx.bq.delete_table(staging_id, not_found_ok=True)
+            logging.info(f"🗑️ Deleted staging table {staging_id}")
 
 def datetime_now_str():
     return dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-def generate_cost_report(ctx, total_usage, success, total):
-    # ... logic from main.py ...
-    pass
+def generate_cost_report(ctx: Context, total_usage: dict, success: int, total: int):
+    """
+    Calculates cost based on Gemini 2.5 Flash-Lite pricing and records it.
+    Input: $0.10 / 1M tokens, Output: $0.40 / 1M tokens
+    """
+    input_price = 0.10 / 1_000_000
+    output_price = 0.40 / 1_000_000
+    
+    input_tokens = total_usage.get("prompt_token_count", 0)
+    output_tokens = total_usage.get("candidates_token_count", 0)
+    
+    total_cost = (input_tokens * input_price) + (output_tokens * output_price)
+    
+    report = {
+        "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "run_id": ctx.tracker.run_id,
+        "mode": ctx.config.run_mode,
+        "units": {
+            "cams_attempted": total,
+            "cams_succeeded": success,
+        },
+        "usage": total_usage,
+        "estimated_cost_usd": round(total_cost, 5)
+    }
+    
+    # Log to console
+    logging.info("=" * 40)
+    logging.info("📊 STAGE 4 COST REPORT")
+    logging.info(f"   Tokens: {input_tokens:,} in / {output_tokens:,} out")
+    logging.info(f"   Cost:   ${total_cost:.5f}")
+    logging.info(f"   Success: {success}/{total}")
+    logging.info("=" * 40)
+    
+    # Save via IOBackend
+    ctx.io.write_text("output/cost_report.json", json.dumps(report, indent=2))
+    
+    # Update Status Tracker
+    ctx.tracker.update(report=report)

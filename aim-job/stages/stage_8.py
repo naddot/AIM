@@ -4,5 +4,5 @@ import logging
 
 def run(ctx: Context):
     logging.info("Starting Stage 8: Output Core SQL...")
-    run_sql_query(ctx, "output_core.sql", "Output Core")
+    run_sql_query(ctx, "aim_insights_update.sql", "Output Core")
     logging.info("✅ Stage 8 completed.")

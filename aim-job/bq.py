@@ -11,26 +11,30 @@ def get_bq_client(config: AimConfig) -> bigquery.Client:
     # We will stick to that safe pattern.
     return bigquery.Client(project=config.project_id)
 
+def execute_query(client: bigquery.Client, query: str, dry_run: bool):
+    """Executes a raw SQL string."""
+    try:
+        if not dry_run:
+            query_job = client.query(query)
+            query_job.result()
+            logging.info("✅ Query executed successfully.")
+        else:
+            logging.info("🚧 DRY RUN: Would execute query.")
+    except Exception as e:
+        logging.error(f"❌ Failed to execute query: {e}")
+        raise
+
 def execute_query_from_file(client: bigquery.Client, file_path: str, dry_run: bool):
     """Reads SQL from file and executes it."""
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             query = f.read()
             
-        logging.info(f"📜 Executing SQL from {file_path}...")
-        
-        if not dry_run:
-            query_job = client.query(query)
-            query_job.result() # Wait for completion
-            logging.info("✅ SQL executed successfully.")
-        else:
-            logging.info("🚧 DRY RUN: Would execute SQL.")
+        logging.info(f"📜 Reading query from {file_path}...")
+        execute_query(client, query, dry_run)
             
     except FileNotFoundError:
         logging.error(f"❌ SQL file not found: {file_path}")
-        raise
-    except Exception as e:
-        logging.error(f"❌ Failed to execute SQL: {e}")
         raise
 
 def load_table_from_dataframe(client, df, table_ref, job_config, dry_run):
