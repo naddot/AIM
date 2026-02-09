@@ -29,3 +29,9 @@ Each service has its own deployment script (`deploy.ps1` or `package.json` scrip
 4.  For each batch of data, **AIM Job** calls **AIM Engine** (`AIM-Waves`).
 5.  **AIM Engine** uses Gemini to generate insights/recommendations and returns them.
 6.  **AIM Job** saves results back to BigQuery.
+
+## Recent Updates (Feb 2026)
+
+-   **AIM-Waves**: Upgraded to **Gemini 2.5 Flash-Lite**. Fixed SKU truncation (now returns 24 items). Fixed BigQuery case-sensitivity issues.
+-   **aim-job**: Fixed Stage 1 bucket access config. Updated cost reporting to GBP. Corrected SQL file path resolution.
+-   **Full Pipeline**: Verified end-to-end processing of 24-token recommendations.

@@ -18,14 +18,20 @@ def run(ctx: Context):
     # which scanned for matching extensions. We replicate that here.
     
     # Logic: Look for "CarMakeModelSales" + extension
-    # Using ctx.io to list files
+    # Using a dedicated backend for the Tyrescore bucket if in Cloud mode
     
     prefix = ctx.config.tyrescore_prefix
-    # GCS/Local path handling...
-    # The original main.py used: list_blobs(prefix=TYRESCORE_PREFIX)
-    # Our backend list_files returns relative paths.
     
-    files = ctx.io.list_files(prefix)
+    # Determine which IO backend to use
+    if ctx.config.aim_mode == "local":
+        io_backend = ctx.io
+    else:
+        # In Cloud mode, we need to read from the specific Tyrescore bucket
+        from file_io.gcs_backend import GCSBackend
+        logging.info(f"🔌 Initializing GCSBackend for bucket: {ctx.config.tyrescore_bucket}")
+        io_backend = GCSBackend(ctx.config.project_id, ctx.config.tyrescore_bucket)
+
+    files = io_backend.list_files(prefix)
     
     # Helper to find file
     def find_file(base_name):
@@ -76,7 +82,7 @@ def run(ctx: Context):
              logging.info(f"📂 Processing {path} → {ctx.config.project_id}.{table}")
              
              # Read content via IO Backend
-             content = ctx.io.read_text(path)
+             content = io_backend.read_text(path)
              from io import StringIO
              
              if "CarMakeModelSales" in path:

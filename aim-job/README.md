@@ -1,43 +1,59 @@
-# AIM-Growth-Job: The Orchestrator
+# AIM Job (Runner)
 
-The Growth Job is the central orchestrator responsible for executing the inventory ranking pipeline. It manages data ingestion, batch pushes to the compute engine, and result persistence.
+The core orchestration service for the AIM Growth Job. It runs as a **Cloud Run Job** and orchestrates the data pipeline from ingestion to recommendation generation and storage.
 
-## 🏗 Run Modes
+## Architecture
 
-### 1. Global Priority Mode (`GLOBAL`) — *Recommended*
-- Processes vehicles based on a global `PriorityRank` CSV.
-- User-defined `TOTAL_OVERALL` limit (e.g., top 10,000).
-- Uses the high-performance `Push Batch` architecture.
+The job consists of sequential stages:
 
-### 2. Per-Segment Mode (`PER_SEGMENT`) — *Legacy*
-- Processes each vehicle segment (e.g., "Economy", "Performance") in parallel.
-- User-defined `TOTAL_PER_SEGMENT` limit.
+1.  **Stage 1: Load Data**: Ingests `CarMakeModelSales.csv` and `TyreScore.csv` from GCS (bucket: `tyrescore`) into BigQuery.
+2.  **Stage 2**: Placeholder.
+3.  **Stage 3: TyreScore**: Runs SQL algorithms to calculate base Tyre Scores.
+4.  **Stage 4: Batch Recommender**:
+    -   Iterates through Vehicle/Size combinations.
+    -   Calls `AIM-Waves` (Engine) to get recommendations.
+    -   Stores results in BigQuery (`AIMData` and `CAM_SKU`).
+5.  **Stages 5-9**: Validation, Core Tables, Dashboard Tables, Output Generation.
 
-## 🛠 Features
+## Configuration
 
-- **Smart Batching**: Chunks large runlists into `BATCH_SIZE` requests for Waves.
-- **Rich Recommendations**: Supports up to 24 suggestion slots (4 Hotboxes + 20 List items) with strict order preservation.
-- **Robust Retries**: Attempts to recover failed CAMs in a specialized retry pass with internal formatting glitch protection.
-- **Audit Manifests**: Writes detailed `run_id` audit logs including uri, row counts, and error breakdowns.
-- **Local Mode Interop**: Detects `AIM_MODE=local` to swap Cloud services (GCS, BigQuery) for local directory I/O.
+Configuration is managed via environment variables (in `.env`) and can be overridden by a GCS JSON config file.
 
-## ⚙️ Environment Configuration
+### Key Environment Variables
 
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `AIM_WAVES_URL` | URL of the Waves compute engine. | Required |
-| `AIM_RUN_MODE` | `GLOBAL` or `PER_SEGMENT`. | `PER_SEGMENT` |
-| `AIM_BATCH_SIZE` | Rows per request to Waves. | `500` |
-| `AIM_MODE` | `local` or `cloud`. | `cloud` |
-| `AIM_LOCAL_ROOT` | Path to local demo assets. | `./demo` |
+-   `PROJECT_ID`: GCP Project ID.
+-   `TYRESCORE_BUCKET`: Bucket containing source CSVs (default: `tyrescore`).
+-   `AIM_WAVES_URL`: URL of the AIM Engine service.
+-   `AIM_RUN_MODE`: `GLOBAL` (top X overall) or `PER_SEGMENT`.
+-   `AIM_TOTAL_OVERALL`: Total items to process in GLOBAL mode.
 
-## 📁 Local I/O Simulation
+## Local Development
 
-In local mode, the job interacts with:
-- `demo/config/`: Configuration overrides.
-- `demo/runlist/`: Source CSV data.
-- `demo/output/`: CSV results and `job_status.json`.
-- `demo/logs/`: Request manifests and execution logs.
+1.  Install dependencies:
+    ```bash
+    pip install -r requirements.txt
+    ```
+2.  Run locally:
+    ```bash
+    python main.py
+    ```
 
----
-*The glue of the Autonomous Inventory Management system.*
+## Deployment
+
+To deploy the job to Cloud Run:
+
+```powershell
+.\deploy.ps1
+```
+
+This script:
+1.  Builds the Docker image (`aim-runner`).
+2.  Pushes it to Google Container Registry (`gcr.io`).
+3.  Updates (or creates) the Cloud Run Job.
+
+## Recent Updates
+
+-   **Stage 1 Fix**: Explicitly uses the `tyrescore` bucket for input files, resolving access issues in Cloud mode.
+-   **SKU Expansion**: Now processes up to **20 SKUs** (plus 4 Hotboxes) to match the BigQuery schema.
+-   **SQL Path Fix**: Correctly resolves paths for SQL templates in containerized environments.
+-   **Cost Reporting**: Updated to reflect **GBP** pricing for Gemini 2.5 Flash-Lite.

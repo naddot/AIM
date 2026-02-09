@@ -11,6 +11,31 @@ from context import Context
 from io_manager import load_priority_runlist
 from stages.processing import process_stage4_results
 
+def build_cam_sku_df_from_aim(aim_df: pd.DataFrame) -> pd.DataFrame:
+    required = ["Vehicle", "Size"] + [f"HB{i}" for i in range(1, 5)] + [f"SKU{i}" for i in range(1, 21)]
+    missing = [c for c in required if c not in aim_df.columns]
+    if missing:
+        raise ValueError(f"AIMData missing required columns for CAM_SKU staging: {missing}")
+
+    cam = aim_df[required].copy()
+
+    # Normalise vehicle/size whitespace
+    cam["Vehicle"] = cam["Vehicle"].astype("string").str.replace(r"\s+", " ", regex=True).str.strip()
+    cam["Size"] = cam["Size"].astype("string").str.replace(r"\s+", " ", regex=True).str.strip()
+
+    # Normalise product IDs: blanks/'-'/FormatError -> None
+    for c in [f"HB{i}" for i in range(1, 5)] + [f"SKU{i}" for i in range(1, 21)]:
+        cam[c] = (
+            cam[c]
+            .astype("string")
+            .str.strip()
+            .replace({"": None, "-": None, "FormatError": None})
+        )
+
+    cam["last_modified"] = dt.datetime.now(dt.timezone.utc)
+    return cam
+
+
 async def run(ctx: Context, known_makes: set):
     logging.info(f"Starting Stage 4: Batch Runner (Mode: {ctx.config.run_mode})...")
     
@@ -30,17 +55,18 @@ async def run(ctx: Context, known_makes: set):
              results = await run_per_segment_mode(ctx, client)
 
     # Process Results
-    aim_df, cam_df = process_stage4_results(results, known_makes)
-    
+    aim_df, _ = process_stage4_results(results, known_makes)
+
     if aim_df is None:
         logging.warning("⚠️ Skipping upload/load for Stage 4 due to empty results.")
         return
 
-    # --- UPLOAD 1: AIMData ---
     write_aim_data(ctx, aim_df)
 
-    # --- UPLOAD 2: CAM_SKU (Upsert) ---
+    # Build CAM_SKU from AIM output (not from parse_vehicle_split)
+    cam_df = build_cam_sku_df_from_aim(aim_df)
     write_cam_sku(ctx, cam_df)
+
 
 
 async def run_per_segment_mode(ctx: Context, client):
@@ -232,14 +258,17 @@ def write_aim_data(ctx: Context, df):
                   bigquery.SchemaField("HB2","STRING"),
                   bigquery.SchemaField("HB3","STRING"),
                   bigquery.SchemaField("HB4","STRING"),
-                  *[bigquery.SchemaField(f"SKU{i}","STRING") for i in range(1,17)],
+                  *[bigquery.SchemaField(f"SKU{i}","STRING") for i in range(1,21)],
               ]
          )
          load_table_from_uri(ctx.bq, uri, table_ref, j_conf, ctx.config.dry_run)
 
 
-def write_cam_sku(ctx: Context, df):
-    # Upload CAM_SKU to staging and Merge
+def write_cam_sku(ctx: Context, df: pd.DataFrame):
+    """
+    Upload CAM_SKU staging data to a fixed schema staging table,
+    then run MERGE into CAM_SKU using aim_cam_sku_update.sql.
+    """
     run_id = ctx.tracker.run_id
     basename = f"cam_sku_{run_id}.csv"
     path = f"output/{basename}"
@@ -249,38 +278,73 @@ def write_cam_sku(ctx: Context, df):
     if ctx.config.aim_mode == "local":
         return
 
-    # Cloud Mode: BQ Merge
-    table_id = ctx.config.cam_table_id # Original was 'bqsqltesting.CAM_files.CAM_SKU'
-    staging_id = f"{table_id}_staging_{run_id}"
-    
+    # Target and fixed staging
+    cam_table_id = ctx.config.cam_table_id  # e.g. bqsqltesting.CAM_files.CAM_SKU
+
+    # IMPORTANT: set this to the table you created
+    staging_id = getattr(ctx.config, "cam_sku_staging_table_id", None) or "bqsqltesting.CAM_files.CAM_SKU_staging"
+
     from bq import load_table_from_dataframe, execute_query
-    
-    # 1. Load Staging Table
+
+    # Force schema (NO autodetect)
+    schema = [
+        bigquery.SchemaField("Vehicle", "STRING"),
+        bigquery.SchemaField("Size", "STRING"),
+        *[bigquery.SchemaField(f"HB{i}", "STRING") for i in range(1, 5)],
+        *[bigquery.SchemaField(f"SKU{i}", "STRING") for i in range(1, 21)],
+        bigquery.SchemaField("last_modified", "TIMESTAMP"),
+    ]
+
+    df = df.copy()
+    df["Vehicle"] = df["Vehicle"].astype("string").str.strip()
+    df["Size"] = df["Size"].astype("string").str.strip()
+
+    for i in range(1, 5):
+        c = f"HB{i}"
+        if c not in df.columns:
+            df[c] = None
+        df[c] = (
+            df[c].astype("string").str.strip()
+            .replace({"": None, "-": None, "FormatError": None})
+        )
+
+
+    for i in range(1, 21):
+        c = f"SKU{i}"
+        if c not in df.columns:
+            df[c] = None
+        df[c] = (
+            df[c]
+            .astype("string")
+            .str.strip()
+            .replace({"": None, "-": None, "FormatError": None})
+        )
+    if "last_modified" not in df.columns:
+        df["last_modified"] = dt.datetime.now(dt.timezone.utc)
+
+    # 1) Load staging table (truncate each run)
     j_conf = bigquery.LoadJobConfig(
         write_disposition="WRITE_TRUNCATE",
-        autodetect=True
+        autodetect=False,
+        schema=schema
     )
     load_table_from_dataframe(ctx.bq, df, staging_id, j_conf, ctx.config.dry_run)
-    
-    # 2. Execute Merge
-    try:
-        with open("aim_cam_sku_update.sql", "r", encoding="utf-8") as f:
-            template = f.read()
-        
-        sql = template.format(
-            cam_table_id=table_id,
-            staging_table_id=staging_id
-        )
-        execute_query(ctx.bq, sql, ctx.config.dry_run)
-        
-    except Exception as e:
-        logging.error(f"❌ Merge failed: {e}")
-        raise
-    finally:
-        # 3. Cleanup Staging
-        if not ctx.config.dry_run:
-            ctx.bq.delete_table(staging_id, not_found_ok=True)
-            logging.info(f"🗑️ Deleted staging table {staging_id}")
+
+    # 2) Execute MERGE (staging -> target)
+    # The SQL file is in the root (parent of stages/)
+    sql_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "aim_cam_sku_update.sql")
+    with open(sql_path, "r", encoding="utf-8") as f:
+        template = f.read()
+
+
+    sql = (
+        template
+        .replace("{cam_table_id}", cam_table_id)
+        .replace("{staging_table_id}", staging_id)
+    )
+    execute_query(ctx.bq, sql, ctx.config.dry_run)
+    logging.info("✅ CAM_SKU merge executed successfully.")
+
 
 def datetime_now_str():
     return dt.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -288,10 +352,10 @@ def datetime_now_str():
 def generate_cost_report(ctx: Context, total_usage: dict, success: int, total: int):
     """
     Calculates cost based on Gemini 2.5 Flash-Lite pricing and records it.
-    Input: $0.10 / 1M tokens, Output: $0.40 / 1M tokens
+    Input: £0.072505 / 1M tokens, Output: £0.29002 / 1M tokens
     """
-    input_price = 0.10 / 1_000_000
-    output_price = 0.40 / 1_000_000
+    input_price = 0.072505 / 1_000_000
+    output_price = 0.29002 / 1_000_000
     
     input_tokens = total_usage.get("prompt_token_count", 0)
     output_tokens = total_usage.get("candidates_token_count", 0)
@@ -307,14 +371,14 @@ def generate_cost_report(ctx: Context, total_usage: dict, success: int, total: i
             "cams_succeeded": success,
         },
         "usage": total_usage,
-        "estimated_cost_usd": round(total_cost, 5)
+        "estimated_cost_gbp": round(total_cost, 5)
     }
     
     # Log to console
     logging.info("=" * 40)
     logging.info("📊 STAGE 4 COST REPORT")
     logging.info(f"   Tokens: {input_tokens:,} in / {output_tokens:,} out")
-    logging.info(f"   Cost:   ${total_cost:.5f}")
+    logging.info(f"   Cost:   £{total_cost:.5f}")
     logging.info(f"   Success: {success}/{total}")
     logging.info("=" * 40)
     

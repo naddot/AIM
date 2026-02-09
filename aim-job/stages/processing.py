@@ -77,7 +77,7 @@ def process_stage4_results(results, known_makes: set):
     logging.info(f"🧹 Removed {before - len(out)} duplicate rows on {DEDUP_KEY_COLUMNS}.")
 
     # --- PREPARE DATASET 1: AIMData ---
-    aim_cols = ["Vehicle","Size","HB1","HB2","HB3","HB4"] + [f"SKU{i}" for i in range(1, 17)]
+    aim_cols = ["Vehicle","Size","HB1","HB2","HB3","HB4"] + [f"SKU{i}" for i in range(1, 21)]
     aim_df = out[aim_cols].copy()
 
     # --- PREPARE DATASET 2: CAM_SKU ---
