@@ -138,8 +138,8 @@ WITH
     SELECT
       ProductId,
       TRIM(UPPER(CONCAT(CarMake, CarModel))) AS Vehicle,
-      Orders,
-      Units
+      SAFE_CAST(Orders AS INT64) AS Orders,
+      SAFE_CAST(Units AS INT64) AS Units
     FROM
       `bqsqltesting.nexus_tyrescore.CarMakeModelSales`
   ),
@@ -147,13 +147,13 @@ WITH
     SELECT
       TS.*,
       TSV.Vehicle,
-      TSV.Orders,
-      TSV.Units
+      IFNULL(TSV.Orders, 0) AS Orders,
+      IFNULL(TSV.Units, 0) AS Units
     FROM
       ScoredWithTier TS
     LEFT JOIN
-      TyreSalesVolume TSV ON CAST(TS.ProductId AS STRING) = TSV.ProductId -- Changed: Cast TS.ProductId to STRING to match TSV.ProductId (assuming TSV.ProductId is STRING from CarMakeModelSales)
-    WHERE TSV.ProductId IS NOT NULL
+      TyreSalesVolume TSV ON CAST(TS.ProductId AS STRING) = CAST(TSV.ProductId AS STRING)
+    -- WHERE clause removed to include ALL high-scoring tyres, even if no sales yet
   ),
   -- GOLDILOCKS PRICES
   AVG_PRICES AS (

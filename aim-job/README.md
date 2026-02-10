@@ -55,5 +55,9 @@ This script:
 
 -   **Stage 1 Fix**: Explicitly uses the `tyrescore` bucket for input files, resolving access issues in Cloud mode.
 -   **SKU Expansion**: Now processes up to **20 SKUs** (plus 4 Hotboxes) to match the BigQuery schema.
--   **SQL Path Fix**: Correctly resolves paths for SQL templates in containerized environments.
+-   **SQL Path Fix**: Correctly resolves paths for sequence templates in containerized environments.
 -   **Cost Reporting**: Updated to reflect **GBP** pricing for Gemini 2.5 Flash-Lite.
+-   **Search Re-enabled**: Verification mode active to compare token usage with/without Vertex AI Search.
+-   **SQL Optimizations**:
+    -   `aim_merchandising_update.sql`: Refactored to use a **TEMP TABLE** and unified scan, reducing redundant unnesting.
+    -   `tyrescore_algorithm.sql`: Fixed logic to include "Hidden Gems" (high score, no sales) using `LEFT JOIN` and added robust `SAFE_CAST`.

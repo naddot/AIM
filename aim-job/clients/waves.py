@@ -70,6 +70,7 @@ class WavesClient:
             "brand_enhancer": self.config.brand_enhancer or None,
             "model_enhancer": self.config.model_enhancer or None,
             "season": self.config.season or None,
+            "disable_search": self.config.disable_search,
         }
         payload = {
             "run_id": run_id,

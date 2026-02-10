@@ -57,6 +57,7 @@ class AimConfig:
     brand_enhancer: str = os.getenv("AIM_BRAND_ENHANCER", "").strip()
     model_enhancer: str = os.getenv("AIM_MODEL_ENHANCER", "").strip()
     season: str = os.getenv("AIM_SEASON", "").strip()
+    disable_search: bool = os.getenv("AIM_DISABLE_SEARCH", "False").lower() in ("true", "1", "t")
     
     limit_segments: List[str] = field(default_factory=list)
 
