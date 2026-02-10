@@ -1,0 +1,15 @@
+{
+  "state": "failed",
+  "run_id": "20260210_125706",
+  "started_at": "2026-02-10T12:57:06.175168",
+  "ended_at": "2026-02-10T12:57:07.045856",
+  "heartbeat_ts": "2026-02-10T12:57:07.045856",
+  "last_log_line": "Failed at Stage 4: Batch Recommender",
+  "output_file": null,
+  "error_summary": "Client error '403 Forbidden' for url 'https://aim-engine-829092209663.europe-west1.run.app/login'\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403",
+  "progress": {
+    "attempted": 0,
+    "succeeded": 0,
+    "failed": 0
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "mode": "local",
+  "dry_run": true,
+  "stages": [
+    "Stage 2: Placeholder",
+    "Stage 4: Batch Recommender"
+  ],
+  "sql_files": [],
+  "http_requests": []
+}

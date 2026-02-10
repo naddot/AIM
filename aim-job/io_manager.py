@@ -24,6 +24,11 @@ def load_priority_runlist(config: AimConfig, io_impl: IOBackend) -> pd.DataFrame
       We must check if the URI matches our backend's bucket.
       If not, we instantiate a temporary GCS reader or use a raw client.
     """
+    if config.ignore_gcs_config:
+        logging.info("ℹ️ IGNORE_GCS_CONFIG is True. Skipping Priority Runlist Load.")
+        # Return a dummy DF for dry-run if needed
+        return pd.DataFrame({"Vehicle": ["TestCar"], "Size": ["205/55 R16"]})
+
     try:
         content = ""
         uri = config.priority_runlist_gcs_uri

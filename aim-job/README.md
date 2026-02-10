@@ -61,3 +61,5 @@ This script:
 -   **SQL Optimizations**:
     -   `aim_merchandising_update.sql`: Refactored to use a **TEMP TABLE** and unified scan, reducing redundant unnesting.
     -   `tyrescore_algorithm.sql`: Fixed logic to include "Hidden Gems" (high score, no sales) using `LEFT JOIN` and added robust `SAFE_CAST`.
+-   **Authentication Robustness**: Implemented auto-refresh for OIDC tokens to prevent `401 Unauthorized` errors during long-running batch jobs.
+-   **Rate Limit Handling**: Added exponential backoff retry logic for `429 Resource Exhausted` errors from Vertex AI.
