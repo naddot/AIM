@@ -127,6 +127,67 @@ async def refresh_auth(ctx: Context, client: httpx.AsyncClient):
     await ctx.waves.login(client)
 
 
+
+async def fetch_batch_with_retry(ctx: Context, client: httpx.AsyncClient, run_id: str, batch: list, max_retries: int = 3) -> dict:
+    """
+    Robust fetch with:
+    1. Token Refresh on 401 (max 2 attempts)
+    2. Exponential Backoff on 429/5xx (max_retries)
+    """
+    attempt = 0
+    auth_refreshes = 0
+    
+    while attempt <= max_retries:
+        try:
+            return await ctx.waves.fetch_batch(client, run_id, batch, log_file_backend=ctx.io)
+            
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code
+            
+            # Case 1: 401 Unauthorized -> Refresh Token
+            if code == 401:
+                if auth_refreshes < 2:
+                    logging.warning(f"   ⚠️ 401 Unauthorized. Refreshing Token (Attempt {auth_refreshes+1}/2)...")
+                    try:
+                        await refresh_auth(ctx, client)
+                        auth_refreshes += 1
+                        # Do NOT increment 'attempt' counter for auth issues, 
+                        # so we still have full retries for other errors.
+                        continue 
+                    except Exception as auth_e:
+                        logging.error(f"   ❌ Failed to refresh auth: {auth_e}")
+                        raise # Fatal if we can't refresh
+                else:
+                    logging.error("   ❌ Max auth refreshes exceeded.")
+                    raise
+
+            # Case 2: 429/5xx -> Backoff and Retry
+            if code == 429 or 500 <= code < 600:
+                if attempt < max_retries:
+                    delay = 2 ** attempt # 1s, 2s, 4s...
+                    logging.warning(f"   ⚠️ HTTP {code} Error. Retrying in {delay}s (Attempt {attempt+1}/{max_retries})...")
+                    await asyncio.sleep(delay)
+                    attempt += 1
+                    continue
+                else:
+                    raise # Max retries hit
+
+            # Other Client Errors (400, 403, 404) -> Raise immediately
+            raise
+            
+        except (httpx.RequestError, httpx.TimeoutException) as e:
+            # Case 3: Network/Timeout -> Backoff and Retry
+            if attempt < max_retries:
+                delay = 2 ** attempt
+                logging.warning(f"   ⚠️ Transport/Timeout Error: {e}. Retrying in {delay}s (Attempt {attempt+1}/{max_retries})...")
+                await asyncio.sleep(delay)
+                attempt += 1
+                continue
+            raise
+
+    raise RuntimeError("Max retries exceeded unexpectedly")
+
+
 async def run_global_mode(ctx: Context, client):
     ctx.tracker.update(state="running", last_log_line="Loading priority runlist...")
     run_df = load_priority_runlist(ctx.config, ctx.io)
@@ -153,7 +214,7 @@ async def run_global_mode(ctx: Context, client):
          start_idx = i * ctx.config.batch_size
          try:
              # Use ctx.io for logging if local mode
-             batch_resp = await ctx.waves.fetch_batch(client, run_id, batch, log_file_backend=ctx.io)
+             batch_resp = await fetch_batch_with_retry(ctx, client, run_id, batch)
              
              # Aggregate results
              b_results = batch_resp.get("results", [])
@@ -163,36 +224,10 @@ async def run_global_mode(ctx: Context, client):
              usage = batch_resp.get("usage", {})
              for k in total_usage: total_usage[k] += usage.get(k, 0)
 
-         except httpx.HTTPStatusError as e:
-             if e.response.status_code == 401:
-                 # Token Expired? Refresh and Retry ONCE
-                 logging.warning(f"   ⚠️ Batch failed with 401. Refreshing Token and Retrying...")
-                 try:
-                     await refresh_auth(ctx, client)
-                     batch_resp = await ctx.waves.fetch_batch(client, run_id, batch, log_file_backend=ctx.io)
-                     
-                     # Aggregate results (Successful Retry)
-                     b_results = batch_resp.get("results", [])
-                     for j, res in enumerate(b_results):
-                         all_results[start_idx + j] = res
-                     
-                     usage = batch_resp.get("usage", {})
-                     for k in total_usage: total_usage[k] += usage.get(k, 0)
-                     
-                 except Exception as retry_e:
-                     logging.error(f"   ❌ Retry after Refresh failed: {retry_e}")
-                     for j, cam in enumerate(batch):
-                         all_results[start_idx + j] = {"Vehicle": cam["Vehicle"], "Size": cam["Size"], "success": False}
-             else:
-                 # Other HTTP Errors
-                 logging.error(f"   ❌ Batch failed: {e}")
-                 for j, cam in enumerate(batch):
-                     all_results[start_idx + j] = {"Vehicle": cam["Vehicle"], "Size": cam["Size"], "success": False}
-
          except Exception as e:
-             logging.error(f"   ❌ Batch failed: {e}")
+             logging.error(f"   ❌ Batch failed after retries: {e}")
              for j, cam in enumerate(batch):
-                 all_results[start_idx + j] = {"Vehicle": cam["Vehicle"], "Size": cam["Size"], "success": False}
+                 all_results[start_idx + j] = {"Vehicle": cam["Vehicle"], "Size": cam["Size"], "success": False, "error_code": "BATCH_FAILED"}
 
          # Progress
          processed = min((i + 1) * ctx.config.batch_size, total_cams)
@@ -218,16 +253,17 @@ async def run_global_mode(ctx: Context, client):
              "failed": failed
          })
 
-    # Retry Logic (1 pass)
+    # Retry Logic (1 pass for individual failed items, distinct from batch retry)
     failed_indices = [i for i, r in enumerate(all_results) if not r or not r.get("success")]
     if failed_indices:
-        logging.info(f"   🔄 Retrying {len(failed_indices)} failed CAMs...")
+        logging.info(f"   🔄 Retrying {len(failed_indices)} failed CAMs (Individual Retry)...")
         failed_cams = [all_cams[i] for i in failed_indices]
         retry_batches = [failed_cams[i:i+ctx.config.batch_size] for i in range(0, len(failed_cams), ctx.config.batch_size)]
         
         for i, batch in enumerate(retry_batches):
             try:
-                batch_resp = await ctx.waves.fetch_batch(client, run_id + "_retry", batch)
+                # Use the same robust fetch for retries
+                batch_resp = await fetch_batch_with_retry(ctx, client, run_id + "_retry", batch)
                 b_results = batch_resp.get("results", [])
                 
                 batch_start_failed = i * ctx.config.batch_size
@@ -240,30 +276,8 @@ async def run_global_mode(ctx: Context, client):
                          orig_idx = failed_indices[batch_start_failed + j]
                          all_results[orig_idx] = res
             
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 401:
-                    logging.warning(f"   ⚠️ Retry batch {i+1} failed with 401. Refreshing Token and Retrying...")
-                    try:
-                        await refresh_auth(ctx, client)
-                        batch_resp = await ctx.waves.fetch_batch(client, run_id + "_retry", batch)
-                        b_results = batch_resp.get("results", [])
-                        
-                        batch_start_failed = i * ctx.config.batch_size
-                        for j, res in enumerate(b_results):
-                             # Aggregate usage
-                             usage = batch_resp.get("usage", {})
-                             for k in total_usage: total_usage[k] += usage.get(k, 0)
-                             
-                             if res.get("success"):
-                                 orig_idx = failed_indices[batch_start_failed + j]
-                                 all_results[orig_idx] = res
-                    except Exception as retry_e:
-                         logging.error(f"   ❌ Retry (2nd attempt) batch {i+1} failed: {retry_e}")
-                else:
-                    logging.error(f"   ❌ Retry batch {i+1} failed: {e}")
-
             except Exception as e:
-                logging.error(f"   ❌ Retry batch {i+1} failed: {e}")
+                logging.error(f"   ❌ Retry batch {i+1} failed completely: {e}")
 
     # Final Report
     success_count = sum(1 for r in all_results if r and r.get("success"))
