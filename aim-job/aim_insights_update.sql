@@ -2,7 +2,7 @@ INSERT INTO `bqsqltesting.AIM.aim_token_fact`
 
 WITH Map AS (
   SELECT
-    REGEXP_REPLACE(vehicle, r'\s+', '') AS vehicle_key,
+    REGEXP_REPLACE(LOWER(TRIM(vehicle)), r'[^a-z0-9]', '') AS vehicle_key,
     CarMake,
     CarModel,
     Pod,
@@ -14,7 +14,7 @@ WITH Map AS (
 -- Cast new columns (HB1..HB4, SKU1..SKU16) and align to positions 1..20
 SourceCast AS (
   SELECT
-    REGEXP_REPLACE(Vehicle, r'\s+', '') AS vehicle_key,
+    REGEXP_REPLACE(LOWER(TRIM(vehicle)), r'[^a-z0-9]', '') AS vehicle_key,
     Vehicle,
     Size,
     SAFE_CAST(HB1   AS INT64)  AS t1,
@@ -131,7 +131,7 @@ SELECT
 FROM Enriched e
 LEFT JOIN (
   SELECT DISTINCT
-    UPPER(REGEXP_REPLACE(CAM, r'\s+', '')) AS CAM
+    UPPER(REGEXP_REPLACE(LOWER(TRIM(CAM)), r'[^a-z0-9]', '')) AS CAM
   FROM `bqsqltesting.AIM.aim-manual-cams`
 ) mc
   ON mc.CAM = UPPER(
@@ -143,6 +143,6 @@ LEFT JOIN (
                     CAST(REGEXP_EXTRACT(e.Size, r'/(\d+)\s') AS STRING),
                     CAST(REGEXP_EXTRACT(e.Size, r'R(\d+)$')  AS STRING)
                   )),
-                  r'\s+', ''
+                  r'[^a-z0-9]', ''
                 )
               );

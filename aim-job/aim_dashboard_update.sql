@@ -2,7 +2,7 @@ INSERT INTO `bqsqltesting.AIM.AIM-override-file`
 
 WITH Map AS (
   SELECT
-    REGEXP_REPLACE(vehicle, r'\s+', '') AS vehicle_key,
+    REGEXP_REPLACE(LOWER(TRIM(vehicle)), r'[^a-z0-9]', '') AS vehicle_key,
     CarMake,
     CarModel,
     Pod,
@@ -14,7 +14,7 @@ WITH Map AS (
 -- Map HB1..HB4 + SKU1..SKU16 onto positions 1..20
 SourceCast AS (
   SELECT
-    REGEXP_REPLACE(Vehicle, r'\s+', '') AS vehicle_key,
+    REGEXP_REPLACE(LOWER(TRIM(vehicle)), r'[^a-z0-9]', '') AS vehicle_key,
     Vehicle,
     Size,
     SAFE_CAST(HB1   AS INT64)  AS t1,
@@ -151,18 +151,13 @@ Aggregated AS (
     Category,
     Size,
     Vehicle,
-    UPPER(
-      REGEXP_REPLACE(
-        TRIM(CONCAT(
+    UPPER(REGEXP_REPLACE(LOWER(TRIM(CONCAT(
           CAST(Make   AS STRING),
           CAST(Model  AS STRING),
           CAST(Width  AS STRING),
           CAST(Profile AS STRING),
           CAST(Rim    AS STRING)
-        )),
-        r'\s+', ''
-      )
-    ) AS CAM
+        ))), r'[^a-z0-9]', '')) AS CAM
   FROM Enriched
   GROUP BY
     Make, Model, Width, Profile, Rim, TakeoverName, Segment, Category, Size, Vehicle
@@ -183,7 +178,7 @@ SELECT
 FROM Aggregated a
 LEFT JOIN (
   SELECT DISTINCT
-    UPPER(REGEXP_REPLACE(CAM, r'\s+', '')) AS CAM
+    UPPER(REGEXP_REPLACE(LOWER(TRIM(CAM)), r'[^a-z0-9]', '')) AS CAM
   FROM `bqsqltesting.AIM.aim-manual-cams`
 ) mc
   ON mc.CAM = a.CAM

@@ -139,8 +139,7 @@ visibility_raw AS (
 
       ELSE 'NON MERCH VRM'
     END AS journey_category,
-
-    REPLACE(TRIM(UPPER(item_category5)), ' ', '') AS vehicle,
+    REGEXP_REPLACE(LOWER(TRIM(item_category5)), r'[^a-z0-9]', '') AS vehicle,
 
     CASE
       WHEN item_list_index = '(not set)' THEN NULL
@@ -240,7 +239,7 @@ purchases_by_visit AS (
 
 vehicle_map AS (
   SELECT
-    REPLACE(TRIM(UPPER(Vehicle)), ' ', '') AS vehicle_key,
+    REGEXP_REPLACE(LOWER(TRIM(vehicle)), r'[^a-z0-9]', '') AS vehicle_key,
     ANY_VALUE(Segment)  AS Segment,
     ANY_VALUE(Pod)      AS Pod,
     ANY_VALUE(Category) AS Category

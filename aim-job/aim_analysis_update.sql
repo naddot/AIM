@@ -3,7 +3,7 @@ INSERT INTO `bqsqltesting.AIM.aim-analysis-table`
 -- Map vehicle to metadata
 WITH Map AS (
   SELECT
-    REGEXP_REPLACE(vehicle, r'\s+', '') AS vehicle_key,
+    REGEXP_REPLACE(LOWER(TRIM(vehicle)), r'[^a-z0-9]', '') AS vehicle_key,
     CarMake,
     CarModel,
     Pod,
@@ -15,7 +15,7 @@ WITH Map AS (
 -- Cast new columns (HB1..HB4, SKU1..SKU16) to INT and align to token positions 1..20
 SourceCast AS (
   SELECT
-    REGEXP_REPLACE(Vehicle, r'\s+', '') AS vehicle_key,
+    REGEXP_REPLACE(LOWER(TRIM(vehicle)), r'[^a-z0-9]', '') AS vehicle_key,
     Vehicle,
     Size,
     SAFE_CAST(HB1  AS INT64)  AS t1,
@@ -124,18 +124,13 @@ Aggregated AS (
     Category,
 
     -- Normalised CAM key (remove all spaces)
-    UPPER(
-      REGEXP_REPLACE(
-        TRIM(CONCAT(
+    UPPER(REGEXP_REPLACE(LOWER(TRIM(CONCAT(
           CAST(Make   AS STRING),
           CAST(Model  AS STRING),
           CAST(Width  AS STRING),
           CAST(Profile AS STRING),
           CAST(Rim    AS STRING)
-        )),
-        r'\s+', ''
-      )
-    ) AS CAM
+        ))), r'[^a-z0-9]', '')) AS CAM
   FROM Enriched
   GROUP BY
     Make, Model, Width, Profile, Rim, Segment, Category

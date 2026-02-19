@@ -233,6 +233,11 @@ async def run_global_mode(ctx: Context, client):
          processed = min((i + 1) * ctx.config.batch_size, total_cams)
          succeeded = sum(1 for r in all_results[:processed] if r and r.get("success"))
          failed = sum(1 for r in all_results[:processed] if r and not r.get("success"))
+
+         # Batch specific stats
+         batch_results = all_results[start_idx : start_idx + len(batch)]
+         batch_success = sum(1 for r in batch_results if r and r.get("success"))
+         logging.info(f"   📊 Batch Result: {batch_success}/{len(batch)} CAMs succeeded.")
          
          if failed > 0:
              # Log first few errors to help debugging
@@ -261,6 +266,7 @@ async def run_global_mode(ctx: Context, client):
         retry_batches = [failed_cams[i:i+ctx.config.batch_size] for i in range(0, len(failed_cams), ctx.config.batch_size)]
         
         for i, batch in enumerate(retry_batches):
+            logging.info(f"   🔄 Retry Batch {i+1}/{len(retry_batches)} ({len(batch)} items)...")
             try:
                 # Use the same robust fetch for retries
                 batch_resp = await fetch_batch_with_retry(ctx, client, run_id + "_retry", batch)

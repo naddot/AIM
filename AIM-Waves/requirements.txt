@@ -1,0 +1,13 @@
+Flask
+gunicorn
+google-cloud-bigquery
+google-cloud-storage
+vertexai
+google-cloud-aiplatform>=1.47.0
+pandas
+pydantic
+pytest
+requests
+pyyaml
+jinja2
+python-dotenv
